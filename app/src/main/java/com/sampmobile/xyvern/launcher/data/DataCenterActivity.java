@@ -78,7 +78,9 @@ public class DataCenterActivity extends AppCompatActivity {
 
     private boolean busy;
 
-    private final ActivityResultLauncher<String> pickArchive =
+    // OpenDocument takes a String[] of MIME types, so the launcher is typed the
+    // same way; the contract's output is a single Uri.
+    private final ActivityResultLauncher<String[]> pickArchive =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
                 if (uri != null) installFromUri(uri);
             });
@@ -187,10 +189,14 @@ public class DataCenterActivity extends AppCompatActivity {
         manualButton = secondaryButton("PASANG DARI FILE ZIP");
         manualButton.setOnClickListener(v -> {
             try {
-                pickArchive.launch("application/zip");
+                // Several pickers advertise a zip as octet-stream, so both types are
+                // offered in one call rather than risking an empty list.
+                pickArchive.launch(new String[]{
+                        "application/zip",
+                        "application/x-zip-compressed",
+                        "application/octet-stream"});
             } catch (android.content.ActivityNotFoundException missing) {
-                // Some file managers advertise zip only as octet-stream.
-                pickArchive.launch("application/octet-stream");
+                Toast.makeText(this, "Tidak ada aplikasi pemilih berkas.", Toast.LENGTH_LONG).show();
             }
         });
         actions.addView(manualButton, marginTop(10));
