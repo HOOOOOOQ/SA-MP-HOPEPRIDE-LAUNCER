@@ -17,6 +17,7 @@
 
 #include "TextureLookupGuard.h"
 #include "GetTextureGuard.h"
+#include "../../vendor/shadowhook/patch.h"
 #include "../EngineTelemetry.h"
 #include "../SafeMode.h"
 #include "../../main.h"
@@ -29,6 +30,10 @@ namespace
 {
 
 using namespace GetTextureGuard;
+
+// Anything below this is not a mapped pointer on Android (the first page is
+// reserved), so a name pointer there is rejected before /proc/self/maps is asked.
+constexpr uintptr_t kMinimumNamePointer = 0x10000u;
 
 // /proc/self/maps cache. The engine looks textures up in bursts; re-reading the
 // map file for every lookup would cost more than the lookup. The snapshot is
