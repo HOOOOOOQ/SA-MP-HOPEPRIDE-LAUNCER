@@ -8,9 +8,13 @@
 #include "../../vendor/shadowhook/patch.h"
 #include "TextureDatabase.h"
 #include "TextureDbGuard.h"
+#include "TextureVariantDecision.h"
+#include "TextureLookupGuard.h"
+#include "../EngineTelemetry.h"
 #include "../SafeMode.h"
 
 #include <unistd.h>
+#include <sys/stat.h>
 #include <cstdio>
 
 // Read by the native crash handler, so these need external linkage.
@@ -192,8 +196,23 @@ struct VariantFiles
     bool dat = false;
     bool toc = false;
     bool Any() const { return tmb || dat || toc; }
-    bool Complete() const { return tmb; }
+    // All three parts, because the runtime reads the table to know how many
+    // entries the data file holds. Loading the thumb list alone yields a database
+    // whose header says one thing and whose entry array says nothing.
+    bool Complete() const { return tmb && dat && toc; }
 };
+
+// A part only counts as present when it exists and is not empty. The crash log
+// names one file that "could not be opened" while the rest of that variant was
+// readable; reporting such a set as complete is what let the engine publish a
+// database whose entry array had never been filled.
+bool PartUsable(const char* path)
+{
+    struct stat info;
+    if (stat(path, &info) != 0) return false;
+    if (!S_ISREG(info.st_mode)) return false;
+    return info.st_size > 0;
+}
 
 bool ProbeVariant(const char* database, int format, VariantFiles& files)
 {
@@ -203,6 +222,7 @@ bool ProbeVariant(const char* database, int format, VariantFiles& files)
 
     const char* extensions[] = { "tmb", "dat", "toc" };
     bool* flags[] = { &files.tmb, &files.dat, &files.toc };
+    long sizes[] = { 0, 0, 0 };
 
     for (int i = 0; i < 3; i++)
     {
@@ -210,7 +230,23 @@ bool ProbeVariant(const char* database, int format, VariantFiles& files)
         const int written = snprintf(path, sizeof(path), "%s/texdb/%s/%s.%s.%s",
                                      g_pszStorage, database, database, suffix, extensions[i]);
         if (written <= 0 || static_cast<size_t>(written) >= sizeof(path)) continue;
-        *flags[i] = access(path, R_OK) == 0;
+        *flags[i] = PartUsable(path);
+        if (*flags[i])
+        {
+            struct stat info;
+            if (stat(path, &info) == 0) sizes[i] = (long)info.st_size;
+        }
+    }
+
+    if (files.Any())
+    {
+        // The sizes are logged because the only way to tell a missing variant from
+        // a half written one is by looking at what is actually on disk.
+        FLog("texdb '%s' variant %s: tmb=%s(%ld) dat=%s(%ld) toc=%s(%ld)",
+             database, suffix,
+             files.tmb ? "ada" : "tidak", sizes[0],
+             files.dat ? "ada" : "tidak", sizes[1],
+             files.toc ? "ada" : "tidak", sizes[2]);
     }
 
     return files.Any();
@@ -224,36 +260,95 @@ bool ProbeVariant(const char* database, int format, VariantFiles& files)
 // the hook only reports what is on disk so the data set can be judged.
 constexpr bool kAllowVariantSwitch = false;
 
+// Engine format id -> decision table variant.
+int ToDecisionVariant(int format)
+{
+    switch (format)
+    {
+        case DF_DXT: return TextureVariant::Dxt;
+        case DF_PVR: return TextureVariant::Pvr;
+        case DF_ETC: return TextureVariant::Etc;
+        case DF_UNC: return TextureVariant::Uncompressed;
+        default:     return -1;
+    }
+}
+
+int FromDecisionVariant(int variant)
+{
+    switch (variant)
+    {
+        case TextureVariant::Dxt:          return DF_DXT;
+        case TextureVariant::Pvr:          return DF_PVR;
+        case TextureVariant::Etc:          return DF_ETC;
+        case TextureVariant::Uncompressed: return DF_UNC;
+        default:                           return DF_Default;
+    }
+}
+
+// Fills the decision table's "files present" mask from the disk.
+TextureVariant::FilesPresent ProbeAllVariants(const char* database)
+{
+    TextureVariant::FilesPresent present;
+
+    const int formats[] = { DF_DXT, DF_PVR, DF_ETC, DF_UNC };
+    for (int format : formats)
+    {
+        const int variant = ToDecisionVariant(format);
+        if (variant < 0) continue;
+
+        VariantFiles files;
+        if (!ProbeVariant(database, format, files)) continue;
+
+        if (files.tmb) present.Add((TextureVariant::Variant)variant, TextureVariant::Part::Thumbs);
+        if (files.dat) present.Add((TextureVariant::Variant)variant, TextureVariant::Part::Data);
+        if (files.toc) present.Add((TextureVariant::Variant)variant, TextureVariant::Part::Table);
+    }
+
+    return present;
+}
+
 int PickExistingVariant(const char* database, int requested)
 {
     if (requested >= DF_Default) return requested;
 
-    VariantFiles requestedFiles;
-    ProbeVariant(database, requested, requestedFiles);
-
-    if (requestedFiles.Any()) return requested;
-
-    for (int candidate : kVariantOrder)
+    const int requestedVariant = ToDecisionVariant(requested);
+    if (requestedVariant < 0 || !database)
     {
-        if (candidate == requested) continue;
-
-        VariantFiles candidateFiles;
-        if (!ProbeVariant(database, candidate, candidateFiles)) continue;
-        if (!candidateFiles.Complete()) continue;
-
-        if (requestedFiles.dat && !candidateFiles.dat) continue;
-        if (requestedFiles.toc && !candidateFiles.toc) continue;
-
-        if (kAllowVariantSwitch)
-        {
-            g_texVariantFallbacks++;
-            FLog("texdb '%s': variant %d is absent, using variant %d", database, requested, candidate);
-            return candidate;
-        }
-
-        FLog("texdb '%s': variant %d is absent, variant %d would be available (switch disabled)",
-             database, requested, candidate);
+        // A format the decision table does not model (360/ps3 packing) is passed
+        // through untouched: the engine knows better than a table with four cases.
         return requested;
+    }
+
+    const TextureVariant::FilesPresent present = ProbeAllVariants(database);
+    const TextureVariant::Plan plan = TextureVariant::Choose(
+            (TextureVariant::Variant)requestedVariant, present, kAllowVariantSwitch);
+
+    switch (plan.decision)
+    {
+        case TextureVariant::Decision::UseRequested:
+            return requested;
+
+        case TextureVariant::Decision::UseFallback:
+            g_texVariantFallbacks++;
+            FLog("texdb '%s': variant %d (%s) tidak lengkap, memakai varian %d (%s)",
+                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?",
+                 FromDecisionVariant(plan.variant), TextureVariant::SuffixOf(plan.variant));
+            return FromDecisionVariant(plan.variant);
+
+        case TextureVariant::Decision::WantsFallback:
+            // This is the "player" case from the report: another variant exists but
+            // substituting it has not been proven safe, so the engine keeps its own
+            // choice and the failure is recorded rather than papered over.
+            FLog("texdb '%s': variant %d (%s) tidak lengkap, %d varian lain lengkap "
+                 "tetapi penggantian belum diizinkan",
+                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?",
+                 plan.completeVariants);
+            return requested;
+
+        case TextureVariant::Decision::NoVariant:
+            FLog("texdb '%s': variant %d (%s) tidak lengkap dan tidak ada varian lengkap lain",
+                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?");
+            return requested;
     }
 
     return requested;
@@ -293,14 +388,46 @@ bool LoadThumbsHook(void* thiz, int format, bool setEntries)
     {
         g_texVariantLoadFailures++;
         FLog("texdb '%s': variant %d failed to load", database ? database : "?", chosen);
+
+        // A database whose thumb/data part did not load must not be handed to the
+        // sorter. The runtime object already exists at this point, so the only
+        // honest fix is to leave its entry array empty and to record the failure;
+        // the sort guard reads the same state through TextureDbGuard.
+        const uintptr_t base = reinterpret_cast<uintptr_t>(thiz);
+        if (base >= 0x10000 && (base & 7) == 0)
+        {
+            TextureDatabase* db = static_cast<TextureDatabase*>(thiz);
+            if (db->entries.numEntries != 0 && db->entries.numAlloced == 0)
+            {
+                // numEntries above a zero capacity means the header was read but
+                // the table was not: exactly the inconsistent state the crash
+                // report showed. Clearing it keeps the guard's contract.
+                FLog("texdb '%s': entries=%u dengan alloced=0 setelah gagal, direset",
+                     database ? database : "?", db->entries.numEntries);
+                db->entries.numEntries = 0;
+            }
+        }
     }
 
     // Snapshot the container while we are still in normal thread context: the
     // crash handler prints this instead of walking a database that may be dead.
+    //
+    // LoadThumbs runs for every variant the engine tries, so a database can be
+    // seen as failed (variant absent) and later as loaded (another variant).
+    // A failure is only recorded while no successful load has been observed for
+    // that database; after a success the container is what the engine uses, and
+    // the failure becomes history in the note field instead of the live state.
     DatabaseSnapshot* slot = FindOrAddSnapshot(database);
     if (slot)
     {
-        slot->state = result ? 1 : 2;
+        if (result)
+        {
+            slot->state = 1;
+        }
+        else if (slot->state != 1)
+        {
+            slot->state = 2;
+        }
         slot->format = chosen;
         slot->dataPtr = 0;
         slot->entries = 0;
@@ -316,7 +443,18 @@ bool LoadThumbsHook(void* thiz, int format, bool setEntries)
             slot->dataPtr = static_cast<unsigned long long>(baseEntries);
         }
 
-        SetNote(slot, result ? "load ok" : "load failed");
+        if (result)
+        {
+            SetNote(slot, "load ok");
+        }
+        else if (slot->state == 2)
+        {
+            SetNote(slot, "load failed");
+        }
+        else
+        {
+            SetNote(slot, "variant absen, database tetap terpakai");
+        }
         RebuildDiagnosticsText();
     }
 
@@ -347,16 +485,43 @@ void* LoadHook(const char* withName, bool fullyLoad, int forcedFormat)
 
     void* result = orig_Load(withName, fullyLoad, chosen);
 
+    // The database object can exist while its thumbnail/data part failed to
+    // load: the log showed "'player': variant 5 failed to load" followed by
+    // "'player': loaded". Both lines are true about different things, and the
+    // old snapshot let whichever ran last win, which is how a failed database
+    // ended up reported as healthy. Loading is a state transition, so it is
+    // applied as one: success downgrades a recorded failure, failure records one.
+    DatabaseSnapshot* slot = FindOrAddSnapshot(withName);
+
     if (!result)
     {
-        DatabaseSnapshot* slot = FindOrAddSnapshot(withName);
         if (slot)
         {
             slot->state = 2;
             SetNote(slot, "Load returned null");
             RebuildDiagnosticsText();
-            FLog("texdb '%s': TextureDatabaseRuntime::Load returned null", withName);
         }
+        FLog("texdb '%s': TextureDatabaseRuntime::Load returned null", withName);
+        return result;
+    }
+
+    if (slot)
+    {
+        slot->format = chosen;
+        if (slot->state == 2)
+        {
+            // The container exists now, so the earlier failure no longer
+            // describes it. The note keeps the history instead of hiding it.
+            slot->state = 1;
+            SetNote(slot, "loaded after earlier failure");
+            FLog("texdb '%s': sebelumnya gagal, sekarang berhasil dimuat", withName);
+        }
+        else if (slot->state == 0)
+        {
+            slot->state = 1;
+            SetNote(slot, "loaded");
+        }
+        RebuildDiagnosticsText();
     }
 
     return result;
@@ -558,6 +723,11 @@ void TextureVariantFallback::Initialise()
     CHook::InlineHook("_ZN22TextureDatabaseRuntime11SortEntriesEb",
                       SortEntriesHook, &orig_SortEntries);
 
+    // GetTexture is the second half of the same failure: a database that did not
+    // finish loading is exactly the source of the unusable name pointer the crash
+    // report shows, so both entry points are guarded in the same place.
+    TextureLookupGuard::Install();
+
     LogDatabaseInventory();
 
     FLog("TextureVariantFallback: LoadThumbs hook %s, Load hook %s, force variant=%d",
@@ -568,4 +738,6 @@ void TextureVariantFallback::Initialise()
          kAllowVariantSwitch ? "enabled" : "disabled (log only)");
     FLog("TextureVariantFallback: SortEntries guard %s",
          orig_SortEntries ? "installed" : "not installed (symbol missing)");
+    FLog("TextureVariantFallback: GetTexture guard %s",
+         TextureLookupGuard::Installed() ? "installed" : "not installed (symbol missing)");
 }

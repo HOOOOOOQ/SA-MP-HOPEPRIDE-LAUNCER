@@ -1,3 +1,5 @@
+#include "EngineTelemetry.h"
+#include "Textures/GameStartupStage.h"
 #include "../main.h"
 #include "game.h"
 #include "../vendor/shadowhook/patch.h"
@@ -703,6 +705,7 @@ void CGame::ToggleCJWalk(bool bUseCJWalk)
 }
 
 void CGame::InitialiseOnceBeforeRW() {
+    EngineTelemetry::ReportStartupStage(StageGameInit);
     CMemoryMgr::Init();
     CHook::CallFunction<void>("_ZN14MobileSettings10InitializeEv");
     CHook::CallFunction<void>("_ZN13CLocalisation10InitialiseEv");
@@ -756,6 +759,7 @@ bool CGame::InitialiseRenderWare() {
     static int s_callCount = 0;
     s_callCount++;
     FLog("InitialiseRenderWare .. (call #%d)", s_callCount);
+    EngineTelemetry::ReportStartupStage(StageRenderWare);
 
     CCamera& TheCamera = *reinterpret_cast<CCamera*>(g_libGTASA + (VER_x32 ? 0x00951FA8 : 0xBBA8D0));
 
@@ -788,6 +792,12 @@ bool CGame::InitialiseRenderWare() {
     {
         FLog("InitialiseRenderWare: texture databases already loaded, not loading again");
     }
+
+    // The databases are the slow part of this function, so the stage is reported
+    // after the load block and before anything that needs textures. Textures are
+    // then reported as ready once the camera/world exist, because only from that
+    // point can GetTexture be reached by the render loop.
+    EngineTelemetry::ReportStartupStage(StageTextureDb);
 
     const auto camera = RwCameraCreate();
     if (!camera) return false;
@@ -832,6 +842,9 @@ bool CGame::InitialiseRenderWare() {
     CGame::m_pWorkingMatrix2 = RwMatrixCreate();
 
     if (!InitGui()) return false;
+
+    // Gui initialised, world and camera exist: texture lookups can now succeed.
+    EngineTelemetry::ReportStartupStage(StageTextures);
 
     return true;
 }

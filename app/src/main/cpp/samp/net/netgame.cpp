@@ -2,6 +2,8 @@
 #include <cmath>
 #include "../main.h"
 #include "../game/game.h"
+#include "../game/EngineTelemetry.h"
+#include "../game/Textures/GameStartupStage.h"
 #include "netgame.h"
 #include "../game/Timer.h"
 #include "../gui/gui.h"
@@ -113,6 +115,11 @@ CNetGame::CNetGame(const char* szHostOrIp, int iPort, const char *szPlayerName, 
 	m_dwLastConnectAttempt = CTimer::m_snTimeInMillisecondsNonClipped;
 	SetGameState(GAMESTATE_WAIT_CONNECT);
 	m_bLanMode = false;
+
+	// Real stage, reported where the engine actually reaches it: the network
+	// object exists and the client is now trying to reach the server. The Java
+	// loading screen shows this only because it happened, not on a timer.
+	EngineTelemetry::ReportStartupStage(StageConnect);
 
     if (pJavaWrapper) pJavaWrapper->HideLoadingScreen();
 
@@ -630,6 +637,10 @@ void CNetGame::Packet_ConnectionSucceeded(Packet *pkt)
 	if (pUI) pUI->chat()->addDebugMessage("Terhubung. Bergabung...");
 
 	SetGameState(GAMESTATE_AWAIT_JOIN);
+
+	// Handshake accepted: the loading screen can now say "masuk ke game" because
+	// the join sequence really started.
+	EngineTelemetry::ReportStartupStage(StageReady);
 
 	uint8_t byteNameLen = strlen(GetPlayerPool()->GetLocalPlayerName());
 	uint8_t byteAuthBSLen = strlen(AUTH_BS);

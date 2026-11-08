@@ -28,6 +28,8 @@ import com.hopepride.samp.game.GameDataDownloadService;
 import com.hopepride.samp.launcher.MainActivity;
 import com.hopepride.samp.launcher.data.FilesData;
 import com.hopepride.samp.launcher.util.GameDataVerifier;
+import com.hopepride.samp.launcher.data.DataCenterActivity;
+import com.hopepride.samp.launcher.ui.MotionKit;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -103,6 +105,20 @@ public class HomeFragment extends Fragment {
             }
         });
         btnVerifyData.setOnClickListener(v -> runVerification());
+
+        android.view.View dataCenter = view.findViewById(R.id.btn_data_center);
+        if (dataCenter != null) {
+            MotionKit.attachPressFeedback(dataCenter);
+            dataCenter.setOnClickListener(v ->
+                    startActivity(new android.content.Intent(requireContext(), DataCenterActivity.class)));
+        }
+
+        // Entrance motion: the dashboard content settles in once, in reading order.
+        android.view.ViewGroup content = view.findViewById(R.id.card_data_status);
+        if (content != null) {
+            MotionKit.enter(content, 0, 340L, 0.97f);
+        }
+        MotionKit.attachPressFeedback(view.findViewById(R.id.btn_browse_servers));
 
         return view;
     }

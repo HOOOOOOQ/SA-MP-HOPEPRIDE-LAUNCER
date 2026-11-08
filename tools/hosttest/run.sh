@@ -30,3 +30,12 @@ c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
 
 echo
 "$work/guardtest"
+
+# Guards added for the Texture Database / Custom Models crash work.
+c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+    -I"$samp/game/Textures" \
+    "$here/stream_guard_test.cpp" \
+    -o "$work/streamguardtest"
+
+echo
+"$work/streamguardtest"

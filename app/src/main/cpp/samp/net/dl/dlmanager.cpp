@@ -4,6 +4,8 @@
 #include "../../gui/gui.h"
 #include "../../game/Streaming.h"
 #include "../../game/Models/ModelInfo.h"
+#include "../../game/Textures/RenderWareStreamGuard.h"
+#include "../../game/EngineTelemetry.h"
 #include "../../vendor/imgui/imgui.h"
 #include "../../vendor/raknet/SAMP/SAMPRPC.h"
 
@@ -384,17 +386,38 @@ bool ReadRenderWareHeader(const std::string& path, uint32_t& version,
 }
 
 // Returns nullptr when the file looks like a usable stream, otherwise the reason.
+//
+// The rules live in RenderWareStreamGuard.h so they can be exercised on the host
+// with byte arrays, and so the same rules apply here and in the diagnostics page:
+//   * the 12 byte binary chunk header must parse and the file must be large
+//     enough to hold it;
+//   * the version must be a RenderWare 3.x value the engine understands;
+//   * the chunk type must be exactly the one expected (DFF clump / TXD dictionary),
+//     which rejects an HTML error page saved as a model;
+//   * the declared payload must fit inside the real file size, which rejects a
+//     download that was cut off (the old check only compared the chunk size with
+//     the file size and still accepted a truncated middle);
+//   * a large unrelated tail after the chunk rejects a mixed/corrupt container.
 const char* ValidateRenderWareFile(const std::string& path, bool expectTxd) {
     uint32_t version = 0, type = 0, chunkSize = 0;
     long size = 0;
     if (!ReadRenderWareHeader(path, version, type, chunkSize, size)) {
         return "tidak dapat dibaca";
     }
-    if (size < 32) return "berkas terlalu kecil";
-    if (version < 0x0300u || version > 0x0600u) return "versi RenderWare tidak dikenal";
-    if (expectTxd && type != 0x16u) return "bukan texture dictionary";
-    if (!expectTxd && type != 0x10u) return "bukan clump DFF";
-    if (chunkSize > (uint32_t)size) return "header lebih besar dari berkas (terpotong)";
+
+    RwHeader header{};
+    header.version = version;
+    header.type = type;
+    header.size = chunkSize;
+
+    uint32_t payload = 0;
+    const RwReject reject = ValidateRenderWareHeader(
+            header, (uint64_t)size,
+            expectTxd ? kRwTypeTexDictionary : kRwTypeClump, payload);
+
+    if (reject != RwReject::Ok) {
+        return DescribeRwReject(reject);
+    }
     return nullptr;
 }
 
@@ -440,6 +463,7 @@ bool DLManager::RegisterCustomModels() {
 
             const char* dffProblem = ValidateRenderWareFile(dffPath, false);
             if (dffProblem) {
+                EngineTelemetry::CountCustomFileRejected();
                 ++invalidFiles;
                 FLog("dl: model %d dilewati, DFF %s: %s (%ld byte)",
                      (int)m.virtualModelId, dffPath.c_str(), dffProblem, (long)st.st_size);
@@ -447,6 +471,7 @@ bool DLManager::RegisterCustomModels() {
             }
             const char* txdProblem = ValidateRenderWareFile(txdPath, true);
             if (txdProblem) {
+                EngineTelemetry::CountCustomFileRejected();
                 ++invalidFiles;
                 FLog("dl: model %d dilewati, TXD %s: %s",
                      (int)m.virtualModelId, txdPath.c_str(), txdProblem);
@@ -569,6 +594,7 @@ bool DLManager::RegisterCustomModels() {
             pInfo->SetTexDictionary(txdBase, "custom_dl");
 
             m_registeredModels.insert(mf.virtualId);
+            EngineTelemetry::CountCustomModelRegistered();
             ++registered;
             FLog("dl: model %d terdaftar (tipe %s, dff %s, txd %s)",
                  (int)mf.virtualId, mf.type == 1 ? "skin" : "objek",

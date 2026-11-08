@@ -29,9 +29,13 @@ jobs:
         with:
           lfs: true
 
-      - name: Host tests (interface table and safe mode)
+      - name: Host tests (interface table, safe mode, texture guards)
         shell: bash
         run: ./tools/hosttest/run.sh
+
+      - name: Source checks (imports, resources, R ids, JNI names)
+        shell: bash
+        run: python3 tools/sourcecheck/checks.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

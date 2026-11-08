@@ -7,6 +7,9 @@
 
 #include "main.h"
 #include "game/Localization.h"
+#include "game/EngineTelemetry.h"
+#include "game/Textures/GameStartupStage.h"
+#include "game/Textures/TextureLookupGuard.h"
 #include "game/game.h"
 #include "net/netgame.h"
 #include "gui/gui.h"
@@ -322,6 +325,27 @@ static void CrashLogReport(int iSignum, siginfo_t* pInfo, ucontext_t* pContext)
     CrashLogHex((uintptr_t)g_texVariantLoadFailures);
     CrashLogPut(" sort-skips=");
     CrashLogHex((uintptr_t)g_texDbSortSkips);
+    CrashLogPut("\n");
+
+    // Which validation rule fired, and how often. A crash that happens with
+    // name-rejected = 0 is not the guarded path, and that distinction is the
+    // whole point of these counters.
+    CrashLogPut("texname:    guard=");
+    CrashLogHex((uintptr_t)(TextureLookupGuard::Installed() ? 1 : 0));
+    CrashLogPut(" rejected=");
+    CrashLogHex((uintptr_t)TextureLookupGuard::RejectedCount());
+    CrashLogPut(" bad-encoding=");
+    CrashLogHex((uintptr_t)TextureLookupGuard::RejectedByEncoding());
+    CrashLogPut(" null-returned=");
+    CrashLogHex((uintptr_t)TextureLookupGuard::NullReturned());
+    CrashLogPut("\n");
+
+    CrashLogPut("stage:      startup=");
+    CrashLogHex((uintptr_t)EngineTelemetry::StartupStage());
+    CrashLogPut(" custom-rejected=");
+    CrashLogHex((uintptr_t)EngineTelemetry::CustomFilesRejected());
+    CrashLogPut(" custom-registered=");
+    CrashLogHex((uintptr_t)EngineTelemetry::CustomModelsRegistered());
     CrashLogPut("\n");
 
     // Prebuilt while the game was running: printing it does not touch the
@@ -897,4 +921,19 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_com_hopepride_samp_game_SAMP_initAssetManager(JNIEnv *env, jobject thiz, jobject assetManager) {
     g_pAssetManager = AAssetManager_fromJava(env, assetManager);
+}
+
+// Startup stage polling for the Java loading screen. The native side only ever
+// records a stage from the code path that performs that work, so Java showing
+// this value is Java showing what really happened (see EngineTelemetry.h).
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_hopepride_samp_game_SAMP_nativeStartupStage(JNIEnv *env, jclass clazz) {
+    return (jint)EngineTelemetry::StartupStage();
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_hopepride_samp_game_SAMP_nativeGetTextureGuardInstalled(JNIEnv *env, jclass clazz) {
+    return TextureLookupGuard::Installed() ? 1 : 0;
 }
