@@ -7,6 +7,7 @@
 #include "../../main.h"
 #include "../../vendor/shadowhook/patch.h"
 #include "TextureDatabase.h"
+#include "TextureDbGuard.h"
 #include "../SafeMode.h"
 
 #include <unistd.h>
@@ -15,6 +16,101 @@
 // Read by the native crash handler, so these need external linkage.
 volatile unsigned long long g_texVariantFallbacks = 0;
 volatile unsigned long long g_texVariantLoadFailures = 0;
+volatile unsigned long long g_texDbSortSkips = 0;
+
+// ---------------------------------------------------------------------------
+// Database snapshots.
+//
+// Preformatted at load time, in normal thread context, so the signal handler only
+// has to print a string. That keeps the crash path free of pointer chasing: a
+// database that died halfway through loading is exactly the object you must not
+// dereference while handling a SIGSEGV.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr int kMaxTrackedDatabases = 12;
+constexpr int kNameLength = 24;
+constexpr unsigned long kDiagCapacity = 3072;
+
+struct DatabaseSnapshot {
+    char name[kNameLength];
+    unsigned int alloced;
+    unsigned int entries;
+    unsigned long long dataPtr;
+    int format;
+    int state;          // 0 unknown, 1 loaded, 2 failed, 3 sort skipped
+    char note[64];
+};
+
+DatabaseSnapshot g_snapshots[kMaxTrackedDatabases];
+int g_snapshotCount = 0;
+char g_diagText[kDiagCapacity];
+
+void CopyName(char* destination, const char* source) {
+    int i = 0;
+    if (source) {
+        while (i < kNameLength - 1 && source[i]) {
+            destination[i] = source[i];
+            i++;
+        }
+    }
+    destination[i] = 0;
+}
+
+DatabaseSnapshot* FindOrAddSnapshot(const char* name) {
+    if (!name) return nullptr;
+
+    for (int i = 0; i < g_snapshotCount; i++) {
+        bool same = true;
+        for (int k = 0; k < kNameLength - 1; k++) {
+            if (g_snapshots[i].name[k] != name[k]) { same = false; break; }
+            if (!name[k]) break;
+        }
+        if (same) return &g_snapshots[i];
+    }
+
+    if (g_snapshotCount >= kMaxTrackedDatabases) return nullptr;
+
+    DatabaseSnapshot* slot = &g_snapshots[g_snapshotCount++];
+    *slot = DatabaseSnapshot{};
+    CopyName(slot->name, name);
+    slot->state = 0;
+    return slot;
+}
+
+void SetNote(DatabaseSnapshot* slot, const char* note) {
+    if (!slot || !note) return;
+    int i = 0;
+    while (i < (int)sizeof(slot->note) - 1 && note[i]) {
+        slot->note[i] = note[i];
+        i++;
+    }
+    slot->note[i] = 0;
+}
+
+void RebuildDiagnosticsText() {
+    unsigned long used = 0;
+    const int written = snprintf(g_diagText, sizeof(g_diagText), "texdb-state: tracked=%d skips=%llu\n",
+                                 g_snapshotCount, g_texDbSortSkips);
+    if (written > 0) used = (unsigned long)written;
+
+    for (int i = 0; i < g_snapshotCount && used + 160 < sizeof(g_diagText); i++) {
+        const DatabaseSnapshot& slot = g_snapshots[i];
+        const int line = snprintf(g_diagText + used, sizeof(g_diagText) - used,
+                                  "  db %-12s state=%d format=%d alloced=%u entries=%u data=%llx %s\n",
+                                  slot.name, slot.state, slot.format, slot.alloced, slot.entries,
+                                  slot.dataPtr, slot.note);
+        if (line <= 0) break;
+        used += (unsigned long)line;
+    }
+}
+
+} // namespace
+
+// Called by the native crash handler: returns text that is already formatted.
+extern "C" const char* TextureDbDiagnostics_Text() {
+    return g_diagText;
+}
 
 namespace
 {
@@ -199,6 +295,31 @@ bool LoadThumbsHook(void* thiz, int format, bool setEntries)
         FLog("texdb '%s': variant %d failed to load", database ? database : "?", chosen);
     }
 
+    // Snapshot the container while we are still in normal thread context: the
+    // crash handler prints this instead of walking a database that may be dead.
+    DatabaseSnapshot* slot = FindOrAddSnapshot(database);
+    if (slot)
+    {
+        slot->state = result ? 1 : 2;
+        slot->format = chosen;
+        slot->dataPtr = 0;
+        slot->entries = 0;
+        slot->alloced = 0;
+
+        const uintptr_t base = reinterpret_cast<uintptr_t>(thiz);
+        if (base >= 0x10000 && (base & 7) == 0)
+        {
+            const TextureDatabase* db = static_cast<const TextureDatabase*>(thiz);
+            slot->alloced = db->entries.numAlloced;
+            slot->entries = db->entries.numEntries;
+            const uintptr_t baseEntries = reinterpret_cast<uintptr_t>(db->entries.dataPtr);
+            slot->dataPtr = static_cast<unsigned long long>(baseEntries);
+        }
+
+        SetNote(slot, result ? "load ok" : "load failed");
+        RebuildDiagnosticsText();
+    }
+
     inHook = false;
     return result;
 }
@@ -224,7 +345,21 @@ void* LoadHook(const char* withName, bool fullyLoad, int forcedFormat)
         }
     }
 
-    return orig_Load(withName, fullyLoad, chosen);
+    void* result = orig_Load(withName, fullyLoad, chosen);
+
+    if (!result)
+    {
+        DatabaseSnapshot* slot = FindOrAddSnapshot(withName);
+        if (slot)
+        {
+            slot->state = 2;
+            SetNote(slot, "Load returned null");
+            RebuildDiagnosticsText();
+            FLog("texdb '%s': TextureDatabaseRuntime::Load returned null", withName);
+        }
+    }
+
+    return result;
 }
 
 // One shot dump of what the installed data set actually contains, database by
@@ -287,54 +422,100 @@ bool SortEntriesHook(void* thiz, bool arg)
 {
     if (!orig_SortEntries) return false;
 
-    if (!thiz)
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(thiz);
+
+    // The engine hands this function a database pointer. When a database failed to
+    // load, that pointer can be a leftover or a partially built object: the report
+    // with fault 0x133f is what dereferencing a small garbage value looks like.
+    // Alignment and range are checked before the first field is read.
+    if (raw < kMinimumPointer || (raw & 7u) != 0)
     {
-        FLog("SortEntries: null database, skipped");
+        g_texDbSortSkips++;
+        FLog("SortEntries: implausible database pointer %llx, skipped",
+             (unsigned long long)raw);
+        RebuildDiagnosticsText();
         return false;
     }
 
     TextureDatabase* database = static_cast<TextureDatabase*>(thiz);
 
     const char* name = database->name;
-    if (name && name[0] == 0) name = nullptr;
-
-    const uint32_t entryCount = database->entries.numEntries;
-    TextureDatabaseEntry* entries = database->entries.dataPtr;
-
-    if (!entries)
+    const uintptr_t rawName = reinterpret_cast<uintptr_t>(name);
+    if (name && (rawName < kMinimumPointer || (rawName & 1u) != 0 || name[0] == 0))
     {
-        FLog("SortEntries: '%s' has no entry array (count %u), skipped",
-             name ? name : "?", entryCount);
-        return false;
+        name = nullptr;
     }
 
-    // A sane database never has more entries than this; anything above means
-    // the container was built from mismatched metadata.
-    if (entryCount > 500000u)
-    {
-        FLog("SortEntries: '%s' entry count %u looks corrupt, skipped",
-             name ? name : "?", entryCount);
-        return false;
-    }
+    SortFacts facts{};
+    facts.database = raw;
+    facts.alloced = database->entries.numAlloced;
+    facts.entries = database->entries.numEntries;
+    facts.entryArray = reinterpret_cast<uintptr_t>(database->entries.dataPtr);
 
-    // TextureDatabaseEntry is packed and stored by value, so walk it with the
-    // real stride. A null name is the condition the crash report points at:
-    // the sort compares entry names, and a null name sends it into address 0.
-    uint32_t nullNames = 0;
-    uint32_t firstBadIndex = 0;
-    for (uint32_t i = 0; i < entryCount; i++)
+    // A database whose load already failed is never sorted: the container did not
+    // finish filling in, and sorting is an optimisation, not a requirement.
+    if (name)
     {
-        if (!entries[i].name)
+        for (int i = 0; i < g_snapshotCount; i++)
         {
-            if (nullNames == 0) firstBadIndex = i;
-            nullNames++;
+            if (g_snapshots[i].state != 2) continue;
+            bool same = true;
+            for (int k = 0; k < kNameLength - 1; k++)
+            {
+                if (g_snapshots[i].name[k] != name[k]) { same = false; break; }
+                if (!name[k]) break;
+            }
+            if (same)
+            {
+                g_texDbSortSkips++;
+                FLog("SortEntries: '%s' failed to load earlier, sort skipped", name);
+                g_snapshots[i].state = 3;
+                SetNote(&g_snapshots[i], "load failed, sort skipped");
+                RebuildDiagnosticsText();
+                return false;
+            }
         }
     }
 
-    if (nullNames != 0)
+    const uintptr_t rawEntries = facts.entryArray;
+    const bool arrayUsable = facts.entries == 0 ||
+            (rawEntries >= kMinimumPointer && (rawEntries & 1u) == 0);
+
+    uint32_t nullNames = 0;
+    uint32_t firstBadIndex = 0;
+    if (arrayUsable && facts.entries > 0 && facts.entries <= facts.alloced &&
+        facts.entries <= kMaximumEntries)
     {
-        FLog("SortEntries: '%s' has %u entries without a name of %u (first at %u), sort skipped",
-             name ? name : "?", nullNames, entryCount, firstBadIndex);
+        TextureDatabaseEntry* entries = database->entries.dataPtr;
+        for (uint32_t i = 0; i < facts.entries; i++)
+        {
+            if (!entries[i].name)
+            {
+                if (nullNames == 0) firstBadIndex = i;
+                nullNames++;
+            }
+        }
+    }
+    facts.nullNames = nullNames;
+
+    const SortDecision decision = EvaluateSortRequest(facts);
+    if (decision != SortDecision::Allow)
+    {
+        g_texDbSortSkips++;
+        FLog("SortEntries: '%s' skipped (%s) alloced=%u entries=%u data=%llx firstBad=%u",
+             name ? name : "?", DescribeSortDecision(decision),
+             facts.alloced, facts.entries, (unsigned long long)facts.entryArray, firstBadIndex);
+
+        DatabaseSnapshot* slot = FindOrAddSnapshot(name);
+        if (slot)
+        {
+            slot->state = 3;
+            slot->alloced = facts.alloced;
+            slot->entries = facts.entries;
+            slot->dataPtr = facts.entryArray;
+            SetNote(slot, DescribeSortDecision(decision));
+            RebuildDiagnosticsText();
+        }
         return false;
     }
 
