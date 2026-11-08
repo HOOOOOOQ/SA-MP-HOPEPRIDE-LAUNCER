@@ -64,10 +64,11 @@ public final class UpdatePlan {
             return new UpdatePlan(Action.NOTHING, 0, 0, "data sudah lengkap");
         }
 
-        // Repairing individual files is only worthwhile when it is cheaper than
-        // the archive. Otherwise the full download is simpler and just as fast.
+        // Repairing individual files is only worthwhile when it saves a real
+        // amount of traffic. Fetching 98% of the archive as individual files is
+        // slower than one request and buys nothing, so the threshold is 80%.
         boolean patchIsCheaper = archiveBytes <= 0 || brokenBytes <= 0
-                || brokenBytes < archiveBytes;
+                || brokenBytes <= (archiveBytes / 10) * 8;
 
         if (patchIsCheaper && brokenFiles < totalFiles) {
             if (availableBytes > 0 && brokenBytes > 0 && brokenBytes > availableBytes) {

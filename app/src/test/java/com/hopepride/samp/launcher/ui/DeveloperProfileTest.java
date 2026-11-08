@@ -41,7 +41,7 @@ public class DeveloperProfileTest {
     @Test public void initialsAreDerivedFromTheName() {
         assertEquals("P", new DeveloperProfile.Person("Pall", "", "").initials());
         assertEquals("F", new DeveloperProfile.Person("fann", "", "").initials());
-        assertEquals("A", new DeveloperProfile.Person("  Pall  ", "", "").initials());
+        assertEquals("P", new DeveloperProfile.Person("  Pall  ", "", "").initials());
         assertEquals("PA", new DeveloperProfile.Person("Pall Ardi", "", "").initials());
         assertEquals("?", new DeveloperProfile.Person("", "", "").initials());
     }
