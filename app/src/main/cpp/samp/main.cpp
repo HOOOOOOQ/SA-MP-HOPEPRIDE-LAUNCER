@@ -205,6 +205,8 @@ extern volatile unsigned long long g_rleGuardLastDestSize;
 extern volatile unsigned long long g_rleGuardLastPad;
 extern volatile unsigned long long g_texVariantFallbacks;
 extern volatile unsigned long long g_texVariantLoadFailures;
+extern volatile unsigned long long g_texDbSortSkips;
+extern "C" const char* TextureDbDiagnostics_Text();
 
 static void CrashLogReport(int iSignum, siginfo_t* pInfo, ucontext_t* pContext)
 {
@@ -318,7 +320,14 @@ static void CrashLogReport(int iSignum, siginfo_t* pInfo, ucontext_t* pContext)
     CrashLogHex((uintptr_t)g_texVariantFallbacks);
     CrashLogPut(" load-failure=");
     CrashLogHex((uintptr_t)g_texVariantLoadFailures);
+    CrashLogPut(" sort-skips=");
+    CrashLogHex((uintptr_t)g_texDbSortSkips);
     CrashLogPut("\n");
+
+    // Prebuilt while the game was running: printing it does not touch the
+    // database objects that might have caused this fault.
+    const char* texdbState = TextureDbDiagnostics_Text();
+    if (texdbState && texdbState[0]) CrashLogPut(texdbState);
 
     CrashLogPut("========================\n");
 }

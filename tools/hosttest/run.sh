@@ -21,3 +21,12 @@ c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -o "$work/hosttest"
 
 "$work/hosttest"
+
+# Texture database guard: pure header from the real source tree, no stubs needed.
+c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+    -I"$samp/game/Textures" \
+    "$here/guard_test.cpp" \
+    -o "$work/guardtest"
+
+echo
+"$work/guardtest"
