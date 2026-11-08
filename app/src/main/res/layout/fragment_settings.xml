@@ -75,6 +75,25 @@
                 <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
                     android:layout_weight="1" android:layout_marginEnd="12dp" android:orientation="vertical">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:fontFamily="@font/montserrat_bold" android:text="Animasi antarmuka"
+                        android:textColor="#EFF7FF" android:textSize="13sp" />
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp" android:fontFamily="@font/montserrat_regular"
+                        android:text="Transisi splash, onboarding, dan halaman. Matikan pada perangkat lambat."
+                        android:textColor="#90A6BC" android:textSize="11sp" />
+                </LinearLayout>
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/animations_switch"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:contentDescription="Animasi antarmuka"
+                    app:thumbTint="@color/hope_switch_thumb" app:trackTint="@color/hope_switch_track" />
+            </LinearLayout>
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#26394D" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:minHeight="68dp" android:gravity="center_vertical" android:orientation="horizontal"
+                android:paddingTop="10dp" android:paddingBottom="10dp">
+                <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content"
+                    android:layout_weight="1" android:layout_marginEnd="12dp" android:orientation="vertical">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
                         android:fontFamily="@font/montserrat_bold" android:text="Obrolan suara"
                         android:textColor="#EFF7FF" android:textSize="13sp" />
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
