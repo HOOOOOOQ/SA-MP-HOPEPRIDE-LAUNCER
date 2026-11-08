@@ -63,6 +63,7 @@ public class SettingsFragment extends Fragment {
             ((MainActivity) getActivity()).hideKeyboard(getActivity());
         }
 
+<<<<<<< HEAD
         view.findViewById(R.id.open_mod_manager).setOnClickListener(v ->
                 startActivity(new Intent(getContext(),
                         com.hopepride.samp.launcher.mods.ModManagerActivity.class)));
@@ -70,6 +71,8 @@ public class SettingsFragment extends Fragment {
                 startActivity(new Intent(getContext(),
                         com.hopepride.samp.launcher.crash.CrashCenterActivity.class)));
 
+=======
+>>>>>>> parent of 33330e2 (feat: expand HopePride Android launcher features)
         view.findViewById(R.id.share_diagnostic_logs).setOnClickListener(v ->
                 com.hopepride.samp.diagnostics.DiagnosticShare.confirm(requireActivity()));
 
