@@ -41,8 +41,13 @@ public final class MotionSpec {
     // ---------------------------------------------------------- geometry
 
     /** Pressed scale for buttons and cards. */
-    public static final float PRESS_SCALE = 0.96f;
+    /**
+     * Press feedback is the gentlest scale in the system: a card that shrinks as
+     * far as an entrance looks like it is collapsing rather than responding.
+     */
+    public static final float PRESS_SCALE = 0.97f;
     /** Entrance scale for cards (grows to 1f). */
+    /** Entrance starts here and settles at 1.0; always deeper than a press. */
     public static final float ENTRANCE_SCALE = 0.94f;
     /** Parallax travel for the dashboard hero, in dp. */
     public static final float PARALLAX_DP = 28f;

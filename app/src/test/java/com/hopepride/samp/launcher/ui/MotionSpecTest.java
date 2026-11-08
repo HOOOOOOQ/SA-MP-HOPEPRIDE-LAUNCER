@@ -47,9 +47,10 @@ public class MotionSpecTest {
     }
 
     @Test public void pressScaleIsASubtleShrink() {
-        assertTrue(MotionSpec.PRESS_SCALE < 1f);
-        assertTrue(MotionSpec.PRESS_SCALE > 0.9f);
-        assertTrue(MotionSpec.ENTRANCE_SCALE < 1f);
-        assertTrue(MotionSpec.ENTRANCE_SCALE > MotionSpec.PRESS_SCALE);
+        assertTrue("press feedback shrinks", MotionSpec.PRESS_SCALE < 1f);
+        assertTrue("press feedback stays gentle", MotionSpec.PRESS_SCALE > 0.9f);
+        assertTrue("entrance starts smaller than a press", MotionSpec.ENTRANCE_SCALE < 1f);
+        assertTrue("an entrance is deeper than a press, so the two read differently",
+                MotionSpec.ENTRANCE_SCALE < MotionSpec.PRESS_SCALE);
     }
 }
