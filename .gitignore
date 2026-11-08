@@ -17,3 +17,6 @@ local.properties
 
 # Host test build output
 tools/hosttest/build/
+
+# Built APK copied here by CI; the binary is a release asset, not source.
+/release/
