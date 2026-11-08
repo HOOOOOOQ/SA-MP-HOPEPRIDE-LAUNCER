@@ -27,6 +27,8 @@ import com.hopepride.samp.launcher.MainActivity;
 import com.hopepride.samp.launcher.util.SharedPreferenceCore;
 import com.hopepride.samp.launcher.util.LauncherVersion;
 import com.hopepride.samp.launcher.util.LauncherEvents;
+import com.hopepride.samp.launcher.ui.MotionKit;
+import com.hopepride.samp.launcher.ui.DeveloperActivity;
 
 import org.ini4j.Wini;
 
@@ -90,6 +92,27 @@ public class SettingsFragment extends Fragment {
         animationsSwitch.setOnCheckedChangeListener((button, enabled) -> uiPrefs.edit()
                 .putBoolean(com.hopepride.samp.launcher.intro.SplashActivity.KEY_ANIMATIONS, enabled)
                 .apply());
+        // Reduced motion: the single switch every animation in the launcher reads.
+        androidx.appcompat.widget.SwitchCompat reduceMotion =
+                view.findViewById(R.id.reduce_motion_switch);
+        if (reduceMotion != null) {
+            MotionKit.init(requireContext());
+            reduceMotion.setChecked(MotionKit.reducedMotion(requireContext()));
+            reduceMotion.setOnCheckedChangeListener((button, enabled) ->
+                    MotionKit.setReducedMotion(requireContext(), enabled));
+        }
+
+        // Help centre entries. Each one opens a screen that exists; none of these
+        // is a placeholder button.
+        wire(requireView(), R.id.open_data_center,
+                com.hopepride.samp.launcher.data.DataCenterActivity.class);
+        wire(requireView(), R.id.open_crash_center,
+                com.hopepride.samp.launcher.crash.CrashCenterActivity.class);
+        wire(requireView(), R.id.open_mod_manager,
+                com.hopepride.samp.launcher.mods.ModManagerActivity.class);
+        wire(requireView(), R.id.open_developer_page,
+                com.hopepride.samp.launcher.ui.DeveloperActivity.class);
+
         SwitchCompat eventReporting = view.findViewById(R.id.event_reporting_switch);
         boolean relayConfigured = LauncherEvents.isConfigured();
         eventReporting.setEnabled(relayConfigured);
@@ -336,5 +359,13 @@ public class SettingsFragment extends Fragment {
             case 15: mMessagesSeekBar.setProgress(3); break;
         }
         mMessagesText.setText(String.valueOf(message));
+    }
+
+    /** Wires a button to an activity, with the same press feedback as the rest. */
+    private void wire(android.view.View root, int id, Class<?> target) {
+        android.view.View button = root.findViewById(id);
+        if (button == null) return;
+        MotionKit.attachPressFeedback(button);
+        button.setOnClickListener(v -> startActivity(new Intent(requireContext(), target)));
     }
 }

@@ -87,6 +87,32 @@
             android:theme="@style/Theme.AppCompat.Light.NoActionBar">
         </activity>
 
+        <!-- Pusat Data Game: download, verify, repair, manual zip install. -->
+        <activity
+            android:name=".launcher.data.DataCenterActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <!-- HopePride Developers: Pall & Fann. -->
+        <activity
+            android:name=".launcher.ui.DeveloperActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <activity
+            android:name=".launcher.crash.CrashCenterActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <activity
+            android:name=".launcher.mods.ModManagerActivity"
+            android:screenOrientation="portrait"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
         <service android:name=".launcher.UpdateService" android:enabled="true" android:exported="false"/>
 
         <service

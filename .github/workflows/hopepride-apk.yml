@@ -14,9 +14,11 @@ on:
   push:
     branches:
       - 'arena/**'
+      - 'main'
 
 permissions:
-  contents: read
+  # Release assets need write access; the checkout itself stays read only.
+  contents: write
 
 jobs:
   build:
@@ -29,9 +31,13 @@ jobs:
         with:
           lfs: true
 
-      - name: Host tests (interface table and safe mode)
+      - name: Host tests (interface table, safe mode, texture guards)
         shell: bash
         run: ./tools/hosttest/run.sh
+
+      - name: Source checks (imports, resources, R ids, JNI names)
+        shell: bash
+        run: python3 tools/sourcecheck/checks.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -118,6 +124,25 @@ jobs:
           path: artifacts/HopePride-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      # The sandbox and the build host share GitHub but not the artifact blob
+      # store, so the APK is also published as a release asset: release assets are
+      # downloadable with plain HTTPS and stay reachable after the artifact expires.
+      - name: Publish APK to release
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="apk-$(date -u +%Y%m%d-%H%M%S)"
+          mkdir -p release
+          cp artifacts/HopePride-debug.apk release/HopePride-SAMP-Android.apk
+          gh release create "$tag" release/HopePride-SAMP-Android.apk \
+            --title "HopePride SAMP debug APK $tag" \
+            --notes "Debug APK built from $GITHUB_SHA. Version 1.7.0 (164), arm64-v8a + armeabi-v7a." \
+            --repo "$GITHUB_REPOSITORY"
+          echo "Release $tag published with HopePride-debug.apk" >> "$GITHUB_STEP_SUMMARY"
 
   send-feature-list:
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.task == 'features') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[send-features]')) }}

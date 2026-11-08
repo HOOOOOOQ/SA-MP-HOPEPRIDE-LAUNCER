@@ -3,6 +3,7 @@
 //
 
 #include "TxdStore.h"
+#include "../main.h" // FLog
 #include "../vendor/shadowhook/patch.h"
 
 int32 CTxdStore::GetNumRefs(int32 index){
@@ -22,7 +23,16 @@ int32 CTxdStore::FindTxdSlot(const char *name) {
 }
 
 int32 CTxdStore::FindTxdSlot(uint32 hash) {
-    assert("NO x64 call");
+    // There is no thunk for the hash based overload on x64 and guessing an offset
+    // is not acceptable, so this reports "not found" instead of falling off the
+    // end of a non-void function (undefined behaviour: the caller then reads
+    // whatever happened to sit in the return register, which is exactly the class
+    // of garbage that made SetCurrentTxd take an invalid slot).
+    //
+    // Callers inside the launcher use the name based overload; the ScopedTXDSlot
+    // constructor takes a slot id, so -1 is a value they can test for.
+    FLog("CTxdStore::FindTxdSlot(uint32) has no x64 implementation, returning -1");
+    return -1;
 }
 
 int32 CTxdStore::AddTxdSlot(const char *name, const char *dbName, bool keepCPU) {

@@ -52,7 +52,15 @@ public class SAMP extends GTASA implements CustomKeyboard.InputListener, HeightP
     private void setTab(int id, String name, int score, int ping) {}
     private void clearTab() {}
 
-    private void showLoadingScreen() {}
+    // Called by the native side when the engine wants the loading screen.
+    private void showLoadingScreen() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mLoadingScreen != null) mLoadingScreen.show();
+            }
+        });
+    }
 
     private void hideLoadingScreen() {
         runOnUiThread(new Runnable() {
@@ -62,6 +70,13 @@ public class SAMP extends GTASA implements CustomKeyboard.InputListener, HeightP
             }
         });
     }
+
+    /**
+     * Startup stage as recorded by the engine (see EngineTelemetry.h).
+     * 0 = nothing reported yet, 8 = ready. The loading screen polls this so it
+     * can only display stages that actually happened.
+     */
+    public static native int nativeStartupStage();
 
     public void setPauseState(boolean pause) {
         runOnUiThread(new Runnable() {
@@ -194,6 +209,10 @@ public class SAMP extends GTASA implements CustomKeyboard.InputListener, HeightP
         mDialog = new DialogManager(this);
         mAttachEdit = new AttachEdit(this);
         mLoadingScreen = new LoadingScreen(this);
+        // Shown immediately: the engine reports StageGameInit / StageRenderWare /
+        // StageConnect as it reaches them, and the screen is hidden by the engine
+        // when it takes over. Nothing here is on a timer.
+        if (mLoadingScreen != null) mLoadingScreen.show();
         instance = this;
 
         // ============================================================
@@ -360,6 +379,7 @@ public class SAMP extends GTASA implements CustomKeyboard.InputListener, HeightP
     @Override
     public void onStop() {
         Log.i(TAG, "**** onStop");
+        if (mLoadingScreen != null) mLoadingScreen.hide();
         super.onStop();
     }
 

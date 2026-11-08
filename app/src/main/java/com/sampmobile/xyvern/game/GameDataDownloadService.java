@@ -45,6 +45,8 @@ import java.util.regex.Pattern;
 public class GameDataDownloadService extends Service {
 
     public static final String ACTION_GAME_DATA = "com.hopepride.samp.action.DOWNLOAD_GAME_DATA";
+    /** Stop the current job. The .part file is kept so a later start resumes. */
+    public static final String ACTION_CANCEL = "com.hopepride.samp.action.CANCEL_GAME_DATA";
     public static final String ACTION_ASSETS = "com.hopepride.samp.action.DOWNLOAD_ASSETS";
 
     public static final String EXTRA_URL = "url";          // page or direct url
@@ -149,6 +151,26 @@ public class GameDataDownloadService extends Service {
         startForegroundCompat(c, i);
     }
 
+    /**
+     * Stops the running job.
+     *
+     * The partial file is deliberately kept: cancel is "not now", not "throw away
+     * 400 MB", and {@link #autoResume(Context)} can continue from the last byte.
+     * Returns true when a job was actually running or persisted.
+     */
+    public static boolean cancel(Context c) {
+        State cur = sState;
+        boolean running = cur.phase == PHASE_CONNECT || cur.phase == PHASE_DOWNLOAD
+                || cur.phase == PHASE_EXTRACT;
+        boolean pending = hasUnfinished(c);
+        if (!running && !pending) return false;
+
+        Intent i = new Intent(c, GameDataDownloadService.class);
+        i.setAction(ACTION_CANCEL);
+        startForegroundCompat(c, i);
+        return true;
+    }
+
     /** Kick off a download (safe from any context). */
     public static void start(Context c, String action, String pageUrl, String version,
                              long expectedSize, String sentinel) {
@@ -198,6 +220,21 @@ public class GameDataDownloadService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForegroundWithNotification(buildNotification("Menyiapkan unduhan...", 0));
+
+        if (intent != null && ACTION_CANCEL.equals(intent.getAction())) {
+            // Cooperative cancel: the worker checks mCancelled between chunks and
+            // before each retry, so the partial file survives.
+            mCancelled = true;
+            if (!mRunning) {
+                setState(PHASE_FAILED, sState.percent, sState.bytes, sState.total,
+                        "Dibatalkan", "Unduhan dihentikan. Data terunduh tetap disimpan.");
+                clearPending(this);
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                stopSelf();
+            }
+            return START_NOT_STICKY;
+        }
+
         if (mRunning) return START_STICKY; // one job at a time
         final String action = intent != null ? intent.getAction() : ACTION_GAME_DATA;
         final String url = intent != null ? intent.getStringExtra(EXTRA_URL) : null;
@@ -287,6 +324,11 @@ public class GameDataDownloadService extends Service {
             com.hopepride.samp.diagnostics.Diagnostics.event("DATA_DOWNLOAD_DONE");
         } catch (Exception e) {
             com.hopepride.samp.diagnostics.Diagnostics.error(stage + "_FAILED", e);
+            if (mCancelled) {
+                // A cancel is not a failure of the data, so the pending job is
+                // cleared: auto-resume must not restart it on the next app open.
+                clearPending(this);
+            }
             if (e instanceof java.net.HttpRetryException) {
                 int code = ((java.net.HttpRetryException) e).responseCode();
                 if (code >= 100 && code <= 599) com.hopepride.samp.diagnostics.Diagnostics.event("DATA_HTTP_" + code);
@@ -398,9 +440,17 @@ public class GameDataDownloadService extends Service {
                         long elapsed = Math.max(1, (System.nanoTime() - startNs) / 1_000_000_000L);
                         long speed = (downloaded - existing) / elapsed;
                         int pct = total > 0 ? (int) Math.min(100, (downloaded * 100) / total) : 0;
+                        // ETA is only shown once there is enough data for the
+                        // average to mean something; before that the line simply
+                        // omits it instead of displaying a guessed number.
+                        String eta = "";
+                        if (total > 0 && speed > 0 && downloaded < total) {
+                            long remaining = (total - downloaded) / speed;
+                            eta = "  •  sisa " + fmtDuration(remaining);
+                        }
                         setState(PHASE_DOWNLOAD, pct, downloaded, total,
                                 fmtBytes(downloaded) + (total > 0 ? " / " + fmtBytes(total) : "")
-                                        + "  •  " + fmtBytes(speed) + "/dtk", null);
+                                        + "  •  " + fmtBytes(speed) + "/dtk" + eta, null);
                         updateNotification(buildNotification(
                                 "Mengunduh " + pct + "% (" + fmtBytes(downloaded)
                                         + (total > 0 ? " / " + fmtBytes(total) : "") + ")", pct));
@@ -417,6 +467,17 @@ public class GameDataDownloadService extends Service {
         } finally {
             conn.disconnect();
         }
+    }
+
+    /** "1 mnt 05 dtk" style duration for the remaining time line. */
+    static String fmtDuration(long seconds) {
+        if (seconds < 0) return "-";
+        if (seconds < 60) return seconds + " dtk";
+        long minutes = seconds / 60;
+        long rest = seconds % 60;
+        if (minutes < 60) return minutes + " mnt " + (rest < 10 ? "0" : "") + rest + " dtk";
+        long hours = minutes / 60;
+        return hours + " jam " + (minutes % 60) + " mnt";
     }
 
     private HttpURLConnection connect(String url, long rangeStart) throws Exception {

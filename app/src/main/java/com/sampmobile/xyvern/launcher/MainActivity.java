@@ -32,6 +32,8 @@ import com.hopepride.samp.launcher.config.Config;
 import com.hopepride.samp.launcher.fragments.HomeFragment;
 import com.hopepride.samp.launcher.fragments.PlayFragment;
 import com.hopepride.samp.launcher.fragments.SettingsFragment;
+import com.hopepride.samp.launcher.ui.MotionKit;
+import com.hopepride.samp.launcher.ui.MotionSpec;
 import com.hopepride.samp.launcher.util.ConfigValidator;
 import com.hopepride.samp.launcher.util.SharedPreferenceCore;
 import com.hopepride.samp.launcher.util.ViewPagerWithoutSwipe;
@@ -57,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MotionKit.init(this);
         com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_ACTIVITY_START");
         // Keep the launcher Activity as the entry point, but do not initialize its tabs
         // until the maintenance check and game-data download gate have completed.
@@ -153,6 +156,26 @@ public class MainActivity extends AppCompatActivity {
         navHome.setOnClickListener(v -> changeTab(0));
         navPlay.setOnClickListener(v -> changeTab(1));
         navSettings.setOnClickListener(v -> changeTab(2));
+
+        // Press feedback on the three destinations, so a tap reads as a physical
+        // press before the page changes.
+        MotionKit.attachPressFeedback(navHome);
+        MotionKit.attachPressFeedback(navPlay);
+        MotionKit.attachPressFeedback(navSettings);
+
+        // Entrance of the bar itself: it settles in once the data gate is open.
+        View navBar = findViewById(R.id.bottom_nav);
+        if (navBar != null) {
+            if (MotionKit.shouldAnimate(this)) {
+                navBar.setAlpha(0f);
+                navBar.setTranslationY(MotionKit.dp(this, 24));
+                navBar.animate().alpha(1f).translationY(0f)
+                        .setStartDelay(120L)
+                        .setDuration(MotionSpec.DURATION_SLOW)
+                        .setInterpolator(MotionKit.enterInterpolator())
+                        .start();
+            }
+        }
     }
 
     private void updateNavUI(int position) {
@@ -160,6 +183,7 @@ public class MainActivity extends AppCompatActivity {
         View[] tabs = {navHome, navPlay, navSettings};
         ImageView[] icons = {ivHome, ivPlay, ivSettings};
         TextView[] labels = {tvHome, tvPlay, tvSettings};
+        final boolean animate = MotionKit.shouldAnimate(this);
         for (int i = 0; i < tabs.length; i++) {
             boolean selected = i == position;
             tabs[i].setBackgroundResource(selected ? R.drawable.bg_hope_nav_selected : 0);
@@ -168,15 +192,70 @@ public class MainActivity extends AppCompatActivity {
             androidx.core.widget.ImageViewCompat.setImageTintList(icons[i],
                     android.content.res.ColorStateList.valueOf(color));
             labels[i].setTextColor(color);
+
+            if (!animate) {
+                icons[i].setScaleX(1f);
+                icons[i].setScaleY(1f);
+                icons[i].setTranslationY(0f);
+                continue;
+            }
+
+            // The active destination lifts slightly and its icon springs to full
+            // size; inactive ones settle back. Same duration for both so the bar
+            // reads as one movement rather than three independent ones.
+            float iconScale = selected ? 1.14f : 1f;
+            float lift = selected ? -MotionKit.dp(this, 2) : 0f;
+            icons[i].animate().scaleX(iconScale).scaleY(iconScale)
+                    .setDuration(MotionSpec.DURATION_BASE)
+                    .setInterpolator(MotionKit.springInterpolator())
+                    .start();
+            labels[i].animate().translationY(lift)
+                    .alpha(selected ? 1f : 0.85f)
+                    .setDuration(MotionSpec.DURATION_BASE)
+                    .setInterpolator(MotionKit.enterInterpolator())
+                    .start();
         }
     }
 
     public void changeTab(int position) {
-        if (pa != null) {
-            getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
-            pa.setCurrentItem(position, true);
+        if (pa == null) return;
+        if (pa.getCurrentItem() == position) return;
+
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+
+        if (!MotionKit.shouldAnimate(this)) {
+            pa.setCurrentItem(position, false);
             updateNavUI(position);
+            return;
         }
+
+        // Cross-fade + slight scale on the outgoing page, then swap and run the
+        // incoming page's own entrance. A hard setCurrentItem() is what made tab
+        // switches feel like a fragment replacement instead of a transition.
+        final View content = pa;
+        final float out = (position > pa.getCurrentItem()) ? -0.04f : 0.04f;
+        content.animate()
+                .alpha(0f)
+                .scaleX(1f + out)
+                .scaleY(1f + out)
+                .setDuration(MotionSpec.DURATION_FAST)
+                .setInterpolator(MotionKit.enterInterpolator())
+                .withEndAction(() -> {
+                    pa.setCurrentItem(position, false);
+                    content.setAlpha(0f);
+                    content.setScaleX(0.98f);
+                    content.setScaleY(0.98f);
+                    content.animate()
+                            .alpha(1f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(MotionSpec.DURATION_MEDIUM)
+                            .setInterpolator(MotionKit.emphasisInterpolator())
+                            .start();
+                })
+                .start();
+
+        updateNavUI(position);
     }
 
     public static void hideKeyboard(Activity activity) {

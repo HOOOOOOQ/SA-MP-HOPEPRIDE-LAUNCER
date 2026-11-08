@@ -367,6 +367,17 @@ public final class GameDataManager {
             throw new Exception("Ekstraksi data gagal: " + error.getMessage(), error);
         }
 
+        // Integrity, in the order that actually protects the user: the archive
+        // checksum is compared when the configuration publishes one, then the
+        // extracted tree is re-read from disk. A mismatch is a failure, not a
+        // warning, because installing a half corrupt tree is what makes the engine
+        // fail to load a texture database later.
+        String archiveProblem = verifyArchiveChecksum(zipFile);
+        if (archiveProblem != null) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("DATA_ARCHIVE_CHECKSUM: " + archiveProblem);
+            throw new Exception(archiveProblem);
+        }
+
         com.hopepride.samp.diagnostics.Diagnostics.event("DATA_EXTRACT_OK: " + summary.describe());
         if (!summary.problems.isEmpty()) {
             com.hopepride.samp.diagnostics.Diagnostics.event(
@@ -381,6 +392,91 @@ public final class GameDataManager {
         DataInfo done = new DataInfo();
         done.version = version;
         markInstalled(c, done);
+    }
+
+    /**
+     * Compares the downloaded archive with the SHA-256 published in the data
+     * configuration. Returns null when there is nothing to compare against, which
+     * is reported honestly instead of being treated as a pass.
+     */
+    private static String verifyArchiveChecksum(File zipFile) {
+        String expected = null;
+        try {
+            JSONObject config = getJson(APP_CONFIG);
+            expected = config.optString("data_sha256", "");
+        } catch (Exception error) {
+            com.hopepride.samp.diagnostics.Diagnostics.error("DATA_CHECKSUM_CONFIG_FAILED", error);
+        }
+
+        if (expected == null || expected.trim().isEmpty()) {
+            com.hopepride.samp.diagnostics.Diagnostics.event(
+                    "DATA_CHECKSUM_UNAVAILABLE: konfigurasi tidak memuat data_sha256");
+            return null;
+        }
+
+        String actual = com.hopepride.samp.launcher.data.DataIntegrity.sha256(zipFile);
+        if (actual == null) {
+            return "Checksum arsip tidak dapat dihitung.";
+        }
+        if (!actual.equalsIgnoreCase(expected.trim())) {
+            return "Checksum arsip tidak cocok (diharapkan " + expected.trim()
+                    + ", didapat " + actual + ").";
+        }
+        com.hopepride.samp.diagnostics.Diagnostics.event("DATA_ARCHIVE_CHECKSUM_OK");
+        return null;
+    }
+
+    /**
+     * Writes the install marker again without touching any game file.
+     *
+     * Called when verification says every file is intact but the marker is gone
+     * (an interrupted install, a cleanup tool, a restored backup). Nothing is
+     * downloaded and nothing is extracted.
+     */
+    public static void rewriteInstallMarker(Context context) {
+        try {
+            String version = context.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
+                    .getString(KEY_DATA_VERSION, FALLBACK_DATA_VERSION);
+            DataInfo info = new DataInfo();
+            info.version = (version == null || version.isEmpty()) ? FALLBACK_DATA_VERSION : version;
+            markInstalled(context, info);
+            com.hopepride.samp.diagnostics.Diagnostics.event("DATA_MARKER_REWRITTEN");
+        } catch (Exception error) {
+            com.hopepride.samp.diagnostics.Diagnostics.error("DATA_MARKER_REWRITE_FAILED", error);
+        }
+    }
+
+    /**
+     * Starts the full package download from the Data Center screen.
+     *
+     * The URL and version come from the same configuration the startup gate reads,
+     * so the Data Center can never download a different package than the one the
+     * launcher expects. Falls back to the built-in defaults when the config cannot
+     * be fetched.
+     */
+    public static void startPackageDownload(Context context) {
+        IO.execute(() -> {
+            DataInfo info = new DataInfo();
+            try {
+                JSONObject config = getJson(APP_CONFIG);
+                info.url = config.optString("data_url", FALLBACK_DATA_PAGE);
+                if (info.url.isEmpty()) info.url = FALLBACK_DATA_PAGE;
+                info.version = config.optString("data_version", FALLBACK_DATA_VERSION);
+                if (info.version.isEmpty()) info.version = FALLBACK_DATA_VERSION;
+                info.size = config.optLong("data_size", 0);
+                info.sentinel = config.optString("data_sentinel", "SAMP/SAMP.ide");
+            } catch (Exception error) {
+                com.hopepride.samp.diagnostics.Diagnostics.error("DATA_CENTER_CONFIG_FAILED", error);
+                info.url = FALLBACK_DATA_PAGE;
+                info.version = FALLBACK_DATA_VERSION;
+                info.sentinel = "SAMP/SAMP.ide";
+            }
+
+            final DataInfo chosen = info;
+            MAIN.post(() -> GameDataDownloadService.start(context,
+                    GameDataDownloadService.ACTION_GAME_DATA,
+                    chosen.url, chosen.version, chosen.size, chosen.sentinel));
+        });
     }
 
     /** Plain GET used by the service to resolve MediaFire pages. */

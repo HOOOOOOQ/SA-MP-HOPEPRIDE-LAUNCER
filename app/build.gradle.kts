@@ -206,6 +206,9 @@ dependencies {
     implementation(libs.navigation.ui)
 
     testImplementation(libs.junit)
+    // The JVM unit tests exercise code that parses JSON. android.jar only has
+    // org.json stubs that throw, so the real implementation is used for tests.
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.espresso.core)
 
