@@ -85,6 +85,18 @@ public class SettingsFragment extends Fragment {
             .getSharedPreferences("com.hopepride.samp", android.content.Context.MODE_PRIVATE)
             .getBoolean("aml_enabled", true));
         mCefSwitch = view.findViewById(R.id.cef_switch);
+
+        // Animation preference used by the splash and onboarding screens.
+        androidx.appcompat.widget.SwitchCompat animationsSwitch =
+                view.findViewById(R.id.animations_switch);
+        android.content.SharedPreferences uiPrefs = requireContext()
+                .getSharedPreferences(com.hopepride.samp.launcher.intro.SplashActivity.UI_PREFS,
+                        android.content.Context.MODE_PRIVATE);
+        animationsSwitch.setChecked(uiPrefs.getBoolean(
+                com.hopepride.samp.launcher.intro.SplashActivity.KEY_ANIMATIONS, true));
+        animationsSwitch.setOnCheckedChangeListener((button, enabled) -> uiPrefs.edit()
+                .putBoolean(com.hopepride.samp.launcher.intro.SplashActivity.KEY_ANIMATIONS, enabled)
+                .apply());
         SwitchCompat eventReporting = view.findViewById(R.id.event_reporting_switch);
         boolean relayConfigured = LauncherEvents.isConfigured();
         eventReporting.setEnabled(relayConfigured);
