@@ -198,8 +198,11 @@ public class DataCenterActivity extends AppCompatActivity {
         cancelButton = secondaryButton("HENTIKAN UNDUHAN");
         cancelButton.setEnabled(false);
         cancelButton.setOnClickListener(v -> {
-            GameDataDownloadService.cancel(this);
-            Toast.makeText(this, "Permintaan berhenti dikirim.", Toast.LENGTH_SHORT).show();
+            boolean requested = GameDataDownloadService.cancel(this);
+            Toast.makeText(this,
+                    requested ? "Permintaan berhenti dikirim."
+                              : "Tidak ada unduhan yang sedang berjalan.",
+                    Toast.LENGTH_SHORT).show();
         });
         actions.addView(cancelButton, marginTop(10));
 
@@ -438,7 +441,18 @@ public class DataCenterActivity extends AppCompatActivity {
     private void startFullDownload() {
         progress.setVisibility(View.VISIBLE);
         progressLabel.setVisibility(View.VISIBLE);
+        // The service checks its own permission on 13+; the notification permission
+        // is requested here so the progress notification can actually appear.
+        requestNotificationPermission();
         GameDataManager.startPackageDownload(getApplicationContext());
+    }
+
+    /** Android 13+ needs POST_NOTIFICATIONS before the progress notification shows. */
+    private void requestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 4712);
     }
 
     private static boolean isMarkerPresent(File root) {

@@ -172,7 +172,7 @@ public class LoadingScreen {
                 root.setVisibility(View.GONE);
                 return;
             }
-            root.animate().alpha(0f).setDuration(MotionKit.DURATION_BASE)
+            root.animate().alpha(0f).setDuration(MotionKit.duration(activity, 220L))
                     .withEndAction(() -> {
                         if (root == null) return;
                         root.setVisibility(View.GONE);
@@ -272,7 +272,7 @@ public class LoadingScreen {
         logo.setScaleX(0.86f);
         logo.setScaleY(0.86f);
         logo.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                .setDuration(MotionKit.DURATION_HERO)
+                .setDuration(MotionKit.duration(activity, 620L))
                 .setInterpolator(MotionKit.springInterpolator())
                 .start();
     }
