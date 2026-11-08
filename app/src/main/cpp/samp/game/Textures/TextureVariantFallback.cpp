@@ -112,8 +112,6 @@ extern "C" const char* TextureDbDiagnostics_Text() {
     return g_diagText;
 }
 
-namespace {
-
 namespace
 {
 
@@ -314,8 +312,8 @@ bool LoadThumbsHook(void* thiz, int format, bool setEntries)
             const TextureDatabase* db = static_cast<const TextureDatabase*>(thiz);
             slot->alloced = db->entries.numAlloced;
             slot->entries = db->entries.numEntries;
-            slot->dataPtr = reinterpret_cast<unsigned long long>(
-                    reinterpret_cast<uintptr_t>(db->entries.dataPtr));
+            const uintptr_t baseEntries = reinterpret_cast<uintptr_t>(db->entries.dataPtr);
+            slot->dataPtr = static_cast<unsigned long long>(baseEntries);
         }
 
         SetNote(slot, result ? "load ok" : "load failed");
