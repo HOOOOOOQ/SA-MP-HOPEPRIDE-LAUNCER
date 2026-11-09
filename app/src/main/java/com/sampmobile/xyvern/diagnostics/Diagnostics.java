@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 /** Installed separately in the launcher and game processes; never uploads logs. */
 public final class Diagnostics {
     private static DiagnosticStore store;
+    /** True once the write failure has been reported, so it is logged once. */
+    private static volatile boolean warnedWriteFailure;
     private Diagnostics() {}
 
     public static void install(Application application) {
@@ -39,7 +41,17 @@ public final class Diagnostics {
     public static void event(String event) { record(event, null); }
     public static void error(String event, Throwable error) { record(event, error); }
     private static void record(String event, Throwable error) {
-        try { if (store != null) store.append(event, error); }
-        catch (Throwable ignored) { Log.w("HopeDiagnostics", "Could not write diagnostic log"); }
+        try {
+            if (store != null) store.append(event, error);
+        } catch (Throwable failure) {
+            // Logged once per process: a full disk or a revoked storage permission
+            // would otherwise flood the log and hide the event that mattered.
+            if (!warnedWriteFailure) {
+                warnedWriteFailure = true;
+                Log.w("HopeDiagnostics", "Could not write diagnostic log: "
+                        + failure.getClass().getSimpleName()
+                        + (failure.getMessage() == null ? "" : " (" + failure.getMessage() + ")"));
+            }
+        }
     }
 }

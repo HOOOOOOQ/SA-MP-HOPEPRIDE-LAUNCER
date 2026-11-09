@@ -10,6 +10,7 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.util.Log;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.Manifest;
@@ -135,7 +136,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeLauncherUi() {
-        if (isFinishing() || isDestroyed()) return;
+        // A late data-gate callback must do nothing when the Activity can no longer
+        // host views, rather than guess at one: this method runs from a Handler
+        // message posted by GameDataManager, so its timing is not tied to onCreate.
+        if (!isLauncherUiUsable()) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_UI_SKIPPED_LIFECYCLE");
+            return;
+        }
+
+        // Bind the pager here, and refuse to continue when the layout did not
+        // provide it. `pa` is a field shared with changeTab(), so leaving it null
+        // would move the crash to the first tab tap instead of removing it.
+        pa = findViewById(R.id.fragment_place);
+        if (pa == null) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_UI_NO_PAGER");
+            return;
+        }
 
         // If the pager already has an adapter, the UI is already built: a late
         // callback (or a restored process) must not attach a second one. Reusing it
@@ -164,6 +180,31 @@ public class MainActivity extends AppCompatActivity {
 
         initNav();
         updateNavUI(pa.getCurrentItem());
+    }
+
+    /**
+     * True only when this Activity can still host launcher UI.
+     *
+     * The data-gate callback is asynchronous, so it can arrive after the window has
+     * been torn down (the system finished the task, the user left during the splash,
+     * the process was being reclaimed). Two checks keep that from becoming a crash:
+     *
+     *   isFinishing() / isDestroyed()          - the Activity is on its way out;
+     *   getWindow().peekDecorView() == null    - the decor view has been removed from
+     *                                            the WindowManager, so the view tree
+     *                                            is detached and findViewById() can no
+     *                                            longer resolve the layout below it.
+     *
+     * Note this is a liveness check only: it does not prove the pager is present,
+     * which is why initializeLauncherUi() still validates the result of
+     * findViewById(R.id.fragment_place) itself.
+     */
+    private boolean isLauncherUiUsable() {
+        if (isFinishing() || isDestroyed()) return false;
+        Window window = getWindow();
+        if (window == null) return false;
+        if (window.peekDecorView() == null) return false;
+        return findViewById(android.R.id.content) != null;
     }
 
     /**
@@ -198,6 +239,13 @@ public class MainActivity extends AppCompatActivity {
         tvHome = findViewById(R.id.tv_home);
         tvPlay = findViewById(R.id.tv_play);
         tvSettings = findViewById(R.id.tv_settings);
+
+        // A missing nav view is a layout problem, not a reason to crash: the pager
+        // still works and updateNavUI() already tolerates null handles.
+        if (navHome == null || navPlay == null || navSettings == null) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_NAV_INCOMPLETE");
+            return;
+        }
 
         navHome.setOnClickListener(v -> changeTab(0));
         navPlay.setOnClickListener(v -> changeTab(1));
