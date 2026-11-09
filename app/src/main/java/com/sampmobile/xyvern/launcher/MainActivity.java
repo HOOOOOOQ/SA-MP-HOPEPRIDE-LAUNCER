@@ -136,12 +136,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeLauncherUi() {
-        // Two separate reasons to stop: the Activity is going away, or its window
-        // hierarchy is already detached. The second case is what produced
-        // "NullPointerException ... getAdapter() on a null object reference":
-        // findViewById() returns null once the decor view has been removed, and the
-        // code then used that null pager. A late data-gate callback must simply do
-        // nothing in that situation, not guess at a view.
+        // A late data-gate callback must do nothing when the Activity can no longer
+        // host views, rather than guess at one: this method runs from a Handler
+        // message posted by GameDataManager, so its timing is not tied to onCreate.
         if (!isLauncherUiUsable()) {
             com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_UI_SKIPPED_LIFECYCLE");
             return;
@@ -188,15 +185,19 @@ public class MainActivity extends AppCompatActivity {
     /**
      * True only when this Activity can still host launcher UI.
      *
-     * A data-gate callback arrives asynchronously, so it can run after the window
-     * has been detached (the process was going down, the system killed the task, or
-     * the user left during the splash). Building views then is what turns a late
-     * callback into a NullPointerException, so every check below is load-bearing:
+     * The data-gate callback is asynchronous, so it can arrive after the window has
+     * been torn down (the system finished the task, the user left during the splash,
+     * the process was being reclaimed). Two checks keep that from becoming a crash:
      *
-     *   isFinishing / isDestroyed  - the Activity is on its way out;
-     *   hasWindowFocus-independent window check - the decor view still belongs to a
-     *   live WindowManager (getWindow().peekDecorView() == null means it was removed);
-     *   isLauncherContentAttached() - the content view is still the inflated layout.
+     *   isFinishing() / isDestroyed()          - the Activity is on its way out;
+     *   getWindow().peekDecorView() == null    - the decor view has been removed from
+     *                                            the WindowManager, so the view tree
+     *                                            is detached and findViewById() can no
+     *                                            longer resolve the layout below it.
+     *
+     * Note this is a liveness check only: it does not prove the pager is present,
+     * which is why initializeLauncherUi() still validates the result of
+     * findViewById(R.id.fragment_place) itself.
      */
     private boolean isLauncherUiUsable() {
         if (isFinishing() || isDestroyed()) return false;
