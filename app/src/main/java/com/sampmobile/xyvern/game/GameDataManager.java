@@ -595,7 +595,7 @@ public final class GameDataManager {
             if (!stripPrefix.isEmpty())
                 android.util.Log.i("GameDataManager", "stripping zip prefix: " + stripPrefix);
 
-            postPhase(ui, "Mengekstrak data...", "0 / " + totalEntries + " file");
+            postPhase(a, ui, "Mengekstrak data...", "0 / " + totalEntries + " file");
             Enumeration<? extends ZipEntry> en = zip.entries();
             int done = 0; long lastUi = 0;
             byte[] buf = new byte[128 * 1024];
