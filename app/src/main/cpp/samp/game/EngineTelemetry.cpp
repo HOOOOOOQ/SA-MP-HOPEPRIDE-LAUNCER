@@ -10,6 +10,7 @@ std::atomic<uint64_t> g_textureNamesRejected{0};
 std::atomic<uint64_t> g_textureNamesAccepted{0};
 std::atomic<uint64_t> g_customFilesRejected{0};
 std::atomic<uint64_t> g_customModelsRegistered{0};
+std::atomic<uint64_t> g_textureDatabaseLoadFailures{0};
 std::atomic<bool>     g_getTextureGuardInstalled{false};
 
 } // namespace
@@ -49,6 +50,11 @@ void EngineTelemetry::CountCustomFileRejected()
     g_customFilesRejected.fetch_add(1, std::memory_order_relaxed);
 }
 
+void EngineTelemetry::CountTextureDatabaseLoadFailed()
+{
+    g_textureDatabaseLoadFailures.fetch_add(1, std::memory_order_relaxed);
+}
+
 void EngineTelemetry::CountCustomModelRegistered()
 {
     g_customModelsRegistered.fetch_add(1, std::memory_order_relaxed);
@@ -67,6 +73,11 @@ uint64_t EngineTelemetry::TextureNamesAccepted()
 uint64_t EngineTelemetry::CustomFilesRejected()
 {
     return g_customFilesRejected.load(std::memory_order_relaxed);
+}
+
+uint64_t EngineTelemetry::TextureDatabaseLoadFailures()
+{
+    return g_textureDatabaseLoadFailures.load(std::memory_order_relaxed);
 }
 
 uint64_t EngineTelemetry::CustomModelsRegistered()

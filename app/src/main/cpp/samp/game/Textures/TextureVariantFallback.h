@@ -14,6 +14,13 @@
 
 #pragma once
 
+// GPU capability bits (TextureGpuCapability.h) read from the driver's GL
+// extension string, plus whether that read has happened at all. Zero/unknown
+// means "the engine keeps its own choice", never "no formats". Read by the crash
+// handler so a report says which variant decision was in force.
+extern unsigned g_gpuCapabilities;
+extern bool g_gpuCapabilitiesKnown;
+
 class TextureVariantFallback
 {
 public:

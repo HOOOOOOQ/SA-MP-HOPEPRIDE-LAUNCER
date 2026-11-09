@@ -25,10 +25,15 @@ public:
     static void CountTextureNameAccepted();
     static void CountCustomFileRejected();
     static void CountCustomModelRegistered();
+    // A texture database whose thumb/data load failed. This is the state that
+    // crashv3.log shows being used as if it were healthy, so it is counted where
+    // the failure happens and reported by the crash handler.
+    static void CountTextureDatabaseLoadFailed();
     static uint64_t TextureNamesRejected();
     static uint64_t TextureNamesAccepted();
     static uint64_t CustomFilesRejected();
     static uint64_t CustomModelsRegistered();
+    static uint64_t TextureDatabaseLoadFailures();
 
     // True when the guard is installed and every GetTexture call is checked.
     static void SetGetTextureGuardInstalled(bool installed);

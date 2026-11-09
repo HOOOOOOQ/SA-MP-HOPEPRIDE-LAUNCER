@@ -31,6 +31,16 @@ c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
 echo
 "$work/guardtest"
 
+# GPU capability policy: the variant decision that crashed in crashv3.log.
+# Needs the engine's format ids, which come from the real TextureDatabase.h.
+c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+    -I"$samp/game/Textures" \
+    "$here/texture_gpu_test.cpp" \
+    -o "$work/gputest"
+
+echo
+"$work/gputest"
+
 # Guards added for the Texture Database / Custom Models crash work.
 c++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -I"$samp/game/Textures" \

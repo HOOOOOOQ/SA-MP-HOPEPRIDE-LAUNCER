@@ -10,6 +10,7 @@
 #include "game/EngineTelemetry.h"
 #include "game/Textures/GameStartupStage.h"
 #include "game/Textures/TextureLookupGuard.h"
+#include "game/Textures/TextureVariantFallback.h"
 #include "game/game.h"
 #include "net/netgame.h"
 #include "gui/gui.h"
@@ -325,6 +326,10 @@ static void CrashLogReport(int iSignum, siginfo_t* pInfo, ucontext_t* pContext)
     CrashLogHex((uintptr_t)g_texVariantLoadFailures);
     CrashLogPut(" sort-skips=");
     CrashLogHex((uintptr_t)g_texDbSortSkips);
+    CrashLogPut(" db-load-failed=");
+    CrashLogHex((uintptr_t)EngineTelemetry::TextureDatabaseLoadFailures());
+    CrashLogPut(" gpu-caps=");
+    CrashLogHex(g_gpuCapabilitiesKnown ? (uintptr_t)g_gpuCapabilities : (uintptr_t)0xFFFFFFFFu);
     CrashLogPut("\n");
 
     // Which validation rule fired, and how often. A crash that happens with

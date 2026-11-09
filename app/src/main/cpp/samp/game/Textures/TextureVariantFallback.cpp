@@ -9,6 +9,7 @@
 #include "TextureDatabase.h"
 #include "TextureDbGuard.h"
 #include "TextureVariantDecision.h"
+#include "TextureGpuCapability.h"
 #include "TextureLookupGuard.h"
 #include "../EngineTelemetry.h"
 #include "../SafeMode.h"
@@ -16,11 +17,32 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <cstdio>
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+
+// TextureGpuCapability.h repeats the engine's format ids so it stays free of
+// engine headers and testable on the host. These asserts are the coupling: if
+// TextureDatabase.h ever renumbers a format, the build fails here instead of the
+// wrong variant being requested at runtime.
+static_assert((int)TextureGpu::FormatUncompressed == (int)DF_UNC, "DF_UNC changed");
+static_assert((int)TextureGpu::FormatDxt == (int)DF_DXT, "DF_DXT changed");
+static_assert((int)TextureGpu::FormatPvr == (int)DF_PVR, "DF_PVR changed");
+static_assert((int)TextureGpu::FormatEtc == (int)DF_ETC, "DF_ETC changed");
+static_assert((int)TextureGpu::FormatDefault == (int)DF_Default, "DF_Default changed");
 
 // Read by the native crash handler, so these need external linkage.
 volatile unsigned long long g_texVariantFallbacks = 0;
 volatile unsigned long long g_texVariantLoadFailures = 0;
 volatile unsigned long long g_texDbSortSkips = 0;
+
+// Defined here, at file scope, because TextureVariantFallback.h declares them
+// extern for main.cpp's crash report. Inside the anonymous namespace below they
+// would get internal linkage and the final link would fail on the reference.
+unsigned g_gpuCapabilities = 0;
+bool g_gpuCapabilitiesKnown = false;
+
+// Internal: whether the "not available yet" line has been logged once.
+namespace { bool g_gpuCapabilitiesRetried = false; }
 
 // ---------------------------------------------------------------------------
 // Database snapshots.
@@ -31,6 +53,13 @@ volatile unsigned long long g_texDbSortSkips = 0;
 // dereference while handling a SIGSEGV.
 // ---------------------------------------------------------------------------
 namespace {
+
+// The GPU/variant choice is defined further down, next to the code that probes
+// the storage; both hooks are defined above it, so the declarations come first.
+// They belong inside this anonymous namespace: a `static` declaration at file
+// scope would declare a different entity and leave these undefined.
+void DetectGpuCapabilities(const char* when);
+int ChooserForDatabase(const char* database, int requested);
 
 constexpr int kMaxTrackedDatabases = 12;
 constexpr int kNameLength = 24;
@@ -307,53 +336,6 @@ TextureVariant::FilesPresent ProbeAllVariants(const char* database)
     return present;
 }
 
-int PickExistingVariant(const char* database, int requested)
-{
-    if (requested >= DF_Default) return requested;
-
-    const int requestedVariant = ToDecisionVariant(requested);
-    if (requestedVariant < 0 || !database)
-    {
-        // A format the decision table does not model (360/ps3 packing) is passed
-        // through untouched: the engine knows better than a table with four cases.
-        return requested;
-    }
-
-    const TextureVariant::FilesPresent present = ProbeAllVariants(database);
-    const TextureVariant::Plan plan = TextureVariant::Choose(
-            (TextureVariant::Variant)requestedVariant, present, kAllowVariantSwitch);
-
-    switch (plan.decision)
-    {
-        case TextureVariant::Decision::UseRequested:
-            return requested;
-
-        case TextureVariant::Decision::UseFallback:
-            g_texVariantFallbacks++;
-            FLog("texdb '%s': variant %d (%s) tidak lengkap, memakai varian %d (%s)",
-                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?",
-                 FromDecisionVariant(plan.variant), TextureVariant::SuffixOf(plan.variant));
-            return FromDecisionVariant(plan.variant);
-
-        case TextureVariant::Decision::WantsFallback:
-            // This is the "player" case from the report: another variant exists but
-            // substituting it has not been proven safe, so the engine keeps its own
-            // choice and the failure is recorded rather than papered over.
-            FLog("texdb '%s': variant %d (%s) tidak lengkap, %d varian lain lengkap "
-                 "tetapi penggantian belum diizinkan",
-                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?",
-                 plan.completeVariants);
-            return requested;
-
-        case TextureVariant::Decision::NoVariant:
-            FLog("texdb '%s': variant %d (%s) tidak lengkap dan tidak ada varian lengkap lain",
-                 database, requested, SuffixForFormat(requested) ? SuffixForFormat(requested) : "?");
-            return requested;
-    }
-
-    return requested;
-}
-
 bool LoadThumbsHook(void* thiz, int format, bool setEntries)
 {
     static thread_local bool inHook = false;
@@ -363,30 +345,25 @@ bool LoadThumbsHook(void* thiz, int format, bool setEntries)
     inHook = true;
 
     const char* database = DatabaseName(thiz);
-    int chosen = format;
+
+    // SafeMode never installs this hook, but a symbol that resolves to a stale
+    // pointer is still possible, so the original is checked again here.
+    if (g_pszStorage) DetectGpuCapabilities("LoadThumbs");
+
+    const int chosen = ChooserForDatabase(database, format);
 
     if (database)
-    {
-        chosen = PickExistingVariant(database, format);
-        if (chosen != format)
-        {
-            g_texVariantFallbacks++;
-            FLog("texdb '%s': variant %d (%s) not on disk, loading variant %d (%s) instead",
-                 database, format, SuffixForFormat(format) ? SuffixForFormat(format) : "auto",
-                 chosen, SuffixForFormat(chosen) ? SuffixForFormat(chosen) : "auto");
-        }
-        else
-        {
-            FLog("texdb '%s': variant %d (%s) available", database, format,
-                 SuffixForFormat(format) ? SuffixForFormat(format) : "auto");
-        }
-    }
+        FLog("texdb '%s': memuat varian %s (diminta %s)",
+             database,
+             SuffixForFormat(chosen) ? SuffixForFormat(chosen) : "auto",
+             SuffixForFormat(format) ? SuffixForFormat(format) : "auto");
 
     const bool result = orig_LoadThumbs(thiz, chosen, setEntries);
 
     if (!result)
     {
         g_texVariantLoadFailures++;
+        EngineTelemetry::CountTextureDatabaseLoadFailed();
         FLog("texdb '%s': variant %d failed to load", database ? database : "?", chosen);
 
         // A database whose thumb/data part did not load must not be handed to the
@@ -472,16 +449,9 @@ void* LoadHook(const char* withName, bool fullyLoad, int forcedFormat)
 {
     if (!orig_Load) return nullptr;
 
-    int chosen = forcedFormat;
-    if (withName)
-    {
-        chosen = PickExistingVariant(withName, forcedFormat);
-        if (chosen != forcedFormat)
-        {
-            g_texVariantFallbacks++;
-            FLog("texdb '%s': load variant %d instead of %d", withName, chosen, forcedFormat);
-        }
-    }
+    // The same chooser LoadThumbs uses, so the variant a database is created for
+    // and the variant its thumb/data files come from can never disagree.
+    const int chosen = withName ? ChooserForDatabase(withName, forcedFormat) : forcedFormat;
 
     void* result = orig_Load(withName, fullyLoad, chosen);
 
@@ -525,6 +495,123 @@ void* LoadHook(const char* withName, bool fullyLoad, int forcedFormat)
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// GPU capability detection.
+//
+// The crash in crashv3.log happened because the engine asked for "etc" on a
+// device whose data set ships "dxt" and "pvr", the load failed, and the database
+// was then used as if it were healthy. Reading the driver's own extension string
+// is the only way to know which packed formats this device can actually decode
+// without guessing from the GPU name.
+//
+// The string is fetched once, and only after an EGL context exists: before
+// RenderWare is initialised glGetString returns null, which is reported as "no
+// constraint" rather than as "no formats", so an early call cannot veto anything.
+// ---------------------------------------------------------------------------
+
+void DetectGpuCapabilities(const char* when)
+{
+    if (g_gpuCapabilitiesKnown) return;
+
+    const char* extensions = nullptr;
+    if (eglGetCurrentContext() != EGL_NO_CONTEXT)
+        extensions = (const char*)glGetString(GL_EXTENSIONS);
+
+    if (!extensions)
+    {
+        // Leave it unknown: ResolveRequestedVariant() then passes the engine's
+        // choice through untouched, exactly like every build before this one.
+        if (!g_gpuCapabilitiesRetried)
+        {
+            g_gpuCapabilitiesRetried = true;
+            FLog("gpu: extension string belum tersedia (%s), varian dibiarkan ke engine", when);
+        }
+        return;
+    }
+
+    g_gpuCapabilities = TextureGpu::CapabilitiesFromExtensions(extensions);
+    g_gpuCapabilitiesKnown = true;
+
+    FLog("gpu: extension terbaca (%s) s3tc=%d pvrtc=%d etc1=%d -> varian disukai %s",
+         when,
+         (g_gpuCapabilities & TextureGpu::kDxt) ? 1 : 0,
+         (g_gpuCapabilities & TextureGpu::kPvrtc) ? 1 : 0,
+         (g_gpuCapabilities & TextureGpu::kEtc1) ? 1 : 0,
+         TextureGpu::SuffixOf(TextureGpu::PreferredVariant(g_gpuCapabilities))
+                 ? TextureGpu::SuffixOf(TextureGpu::PreferredVariant(g_gpuCapabilities)) : "engine");
+}
+
+// The variant to load for one database, in order of preference:
+//
+//   1. what the engine asked for, when this GPU can decode it;
+//   2. else the variant the GPU prefers;
+//   3. else any variant that is complete on disk (dxt, then etc, then pvr, then
+//      unc) - a texture this device can decode beats a database with no entries;
+//   4. else the engine's own choice, untouched, so the failure is reported by the
+//      engine instead of being papered over.
+//
+// Every substitution is logged with both file sets visible, because mixing a
+// .dat from one variant with the .tmb of another is the failure this must not
+// reintroduce: the choice here is per database and per variant suffix.
+int ChooseLoadableVariant(const char* database, int requested, unsigned capabilities)
+{
+    // Ask the GPU again if the first attempt ran before an EGL context existed.
+    if (!g_gpuCapabilitiesKnown && !g_gpuCapabilitiesRetried && database)
+        DetectGpuCapabilities("variant");
+
+    if (!database) return requested;
+
+    const TextureVariant::FilesPresent present = ProbeAllVariants(database);
+
+    int candidate = requested;
+    if (capabilities != 0 || g_gpuCapabilitiesKnown)
+        candidate = TextureGpu::ResolveRequestedVariant(requested, capabilities);
+
+    const int requestedVariant = ToDecisionVariant(candidate);
+    if (requestedVariant >= 0 && present.Complete((TextureVariant::Variant)requestedVariant))
+    {
+        if (candidate != requested)
+        {
+            g_texVariantFallbacks++;
+            FLog("texdb '%s': varian %s tidak dapat didekode perangkat ini, memakai %s",
+                 database,
+                 TextureGpu::SuffixOf(requested) ? TextureGpu::SuffixOf(requested) : "?",
+                 TextureGpu::SuffixOf(candidate) ? TextureGpu::SuffixOf(candidate) : "?");
+        }
+        return candidate;
+    }
+
+    // The preferred variant is not installed either. Take the first complete one
+    // on disk: an empty database is what the crash is made of.
+    const int order[] = { TextureGpu::FormatDxt, TextureGpu::FormatEtc,
+                          TextureGpu::FormatPvr, TextureGpu::FormatUncompressed };
+    for (int format : order)
+    {
+        const int variant = ToDecisionVariant(format);
+        if (variant < 0) continue;
+        if (!present.Complete((TextureVariant::Variant)variant)) continue;
+
+        g_texVariantFallbacks++;
+        FLog("texdb '%s': %s tidak lengkap/dapat didekode, memakai %s yang lengkap di disk",
+             database,
+             TextureGpu::SuffixOf(candidate) ? TextureGpu::SuffixOf(candidate) : "?",
+             TextureGpu::SuffixOf(format) ? TextureGpu::SuffixOf(format) : "?");
+        return format;
+    }
+
+    FLog("texdb '%s': tidak ada varian lengkap di disk (diminta %s), engine tetap memakai pilihannya",
+         database, TextureGpu::SuffixOf(requested) ? TextureGpu::SuffixOf(requested) : "?");
+    return requested;
+}
+
+// What both hooks call. Kept separate from ChooseLoadableVariant() so the
+// capability state is read in exactly one place.
+int ChooserForDatabase(const char* database, int requested)
+{
+    if (!database) return requested;
+    return ChooseLoadableVariant(database, requested, g_gpuCapabilities);
 }
 
 // One shot dump of what the installed data set actually contains, database by
