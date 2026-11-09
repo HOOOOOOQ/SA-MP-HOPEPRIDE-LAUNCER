@@ -10,6 +10,7 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.util.Log;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.Manifest;
@@ -135,7 +136,25 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeLauncherUi() {
-        if (isFinishing() || isDestroyed()) return;
+        // Two separate reasons to stop: the Activity is going away, or its window
+        // hierarchy is already detached. The second case is what produced
+        // "NullPointerException ... getAdapter() on a null object reference":
+        // findViewById() returns null once the decor view has been removed, and the
+        // code then used that null pager. A late data-gate callback must simply do
+        // nothing in that situation, not guess at a view.
+        if (!isLauncherUiUsable()) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_UI_SKIPPED_LIFECYCLE");
+            return;
+        }
+
+        // Bind the pager here, and refuse to continue when the layout did not
+        // provide it. `pa` is a field shared with changeTab(), so leaving it null
+        // would move the crash to the first tab tap instead of removing it.
+        pa = findViewById(R.id.fragment_place);
+        if (pa == null) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_UI_NO_PAGER");
+            return;
+        }
 
         // If the pager already has an adapter, the UI is already built: a late
         // callback (or a restored process) must not attach a second one. Reusing it
@@ -164,6 +183,27 @@ public class MainActivity extends AppCompatActivity {
 
         initNav();
         updateNavUI(pa.getCurrentItem());
+    }
+
+    /**
+     * True only when this Activity can still host launcher UI.
+     *
+     * A data-gate callback arrives asynchronously, so it can run after the window
+     * has been detached (the process was going down, the system killed the task, or
+     * the user left during the splash). Building views then is what turns a late
+     * callback into a NullPointerException, so every check below is load-bearing:
+     *
+     *   isFinishing / isDestroyed  - the Activity is on its way out;
+     *   hasWindowFocus-independent window check - the decor view still belongs to a
+     *   live WindowManager (getWindow().peekDecorView() == null means it was removed);
+     *   isLauncherContentAttached() - the content view is still the inflated layout.
+     */
+    private boolean isLauncherUiUsable() {
+        if (isFinishing() || isDestroyed()) return false;
+        Window window = getWindow();
+        if (window == null) return false;
+        if (window.peekDecorView() == null) return false;
+        return findViewById(android.R.id.content) != null;
     }
 
     /**
@@ -198,6 +238,13 @@ public class MainActivity extends AppCompatActivity {
         tvHome = findViewById(R.id.tv_home);
         tvPlay = findViewById(R.id.tv_play);
         tvSettings = findViewById(R.id.tv_settings);
+
+        // A missing nav view is a layout problem, not a reason to crash: the pager
+        // still works and updateNavUI() already tolerates null handles.
+        if (navHome == null || navPlay == null || navSettings == null) {
+            com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_NAV_INCOMPLETE");
+            return;
+        }
 
         navHome.setOnClickListener(v -> changeTab(0));
         navPlay.setOnClickListener(v -> changeTab(1));

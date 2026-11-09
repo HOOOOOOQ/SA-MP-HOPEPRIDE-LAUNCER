@@ -857,6 +857,55 @@ def count_arguments(raw):
     return count
 
 
+# ------------------------------------------- view fields used but never bound
+def check_view_fields_are_bound():
+    """A view field used before findViewById() is a null dereference, not a style issue.
+
+    The v2 crash was exactly this: `pa.getAdapter()` on a field that the rewritten
+    initializeLauncherUi() never assigned. This check looks, per class, for view
+    typed fields that are read somewhere but never assigned from findViewById()
+    anywhere in the file.
+    """
+    view_types = ("View", "ViewGroup", "Button", "ImageView", "TextView", "EditText",
+                  "SwitchCompat", "SeekBar", "Spinner", "ProgressBar", "RecyclerView",
+                  "ViewPager", "ViewPagerWithoutSwipe", "LinearLayout", "FrameLayout",
+                  "ScrollView", "WebView", "SurfaceView")
+
+    for path in java_files():
+        text = read(path)
+        cleaned = mask_literals(text)
+
+        fields = []
+        for match in re.finditer(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?"
+                                 r"(" + "|".join(view_types) + r")\s+([a-zA-Z_]\w*)\s*;",
+                                 text, re.M):
+            fields.append((match.group(1), match.group(2)))
+        # "Type field = value;" form is assigned inline, so it is skipped.
+        for match in re.finditer(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?"
+                                 r"(" + "|".join(view_types) + r")\s+([a-zA-Z_]\w*)\s*=",
+                                 text, re.M):
+            fields.append((match.group(1), match.group(2), True))
+        if not fields:
+            continue
+
+        for entry in fields:
+            name = entry[1]
+            if name in ("view", "root", "itemView", "contentView"):
+                continue
+            assigned = re.search(r"(?<![\w.])" + re.escape(name) + r"\s*=", cleaned)
+            if not assigned:
+                continue        # never assigned anywhere: reported by javac, not here
+            uses = [m for m in re.finditer(r"(?<![\w.])" + re.escape(name) + r"\s*\.", cleaned)]
+            if not uses:
+                continue
+            # The assignment must exist and be a findViewById() or a parameter.
+            if re.search(r"(?<![\w.])" + re.escape(name) + r"\s*=\s*[^=;]", cleaned):
+                continue
+            line = text[:uses[0].start()].count("\n") + 1
+            fail(path, "view field '%s' is used at line %d but only ever assigned from "
+                       "itself; bind it with findViewById()" % (name, line))
+
+
 def main():
     check_conflict_markers()
     check_imports()
@@ -870,6 +919,7 @@ def main():
     check_layout_symbols()
     check_fragment_view_lifecycle()
     check_own_class_arity()
+    check_view_fields_are_bound()
 
     if findings:
         for line in findings:
