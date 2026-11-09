@@ -65,7 +65,36 @@ public final class GameDataManager {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ExecutorService IO = Executors.newSingleThreadExecutor();
 
+    /**
+     * Called on the main thread once the data gate is open.
+     *
+     * The gate itself is purely about data: the callback may initialise UI, but the
+     * manager never touches the Activity's view hierarchy, so a callback that
+     * arrives while the Activity is being torn down can be dropped by the caller
+     * without leaving half-built screens behind.
+     */
     public interface ReadyCallback { void onReady(); }
+
+    /** True when the Activity is still able to host UI work. */
+    private static boolean canUseUi(Activity activity) {
+        return activity != null && !activity.isFinishing()
+                && (android.os.Build.VERSION.SDK_INT < 17 || !activity.isDestroyed());
+    }
+
+    /**
+     * Posts UI work onto the main thread for an Activity that is still alive.
+     * A dead Activity is skipped instead of being touched from a background thread.
+     */
+    private static void postToUi(Activity activity, Runnable work) {
+        if (work == null) return;
+        MAIN.post(() -> {
+            if (!canUseUi(activity)) {
+                com.hopepride.samp.diagnostics.Diagnostics.event("DATA_GATE_UI_SKIPPED");
+                return;
+            }
+            work.run();
+        });
+    }
 
     private static final class DataInfo {
         String url;        // may be a MediaFire file page or a direct link
@@ -87,7 +116,7 @@ public final class GameDataManager {
                         && config.optBoolean("app_server_status", true);
                 if (!status) {
                     com.hopepride.samp.diagnostics.Diagnostics.event("DATA_MAINTENANCE");
-                    MAIN.post(() -> showMaintenance(activity));
+                    postToUi(activity, () -> showMaintenance(activity));
                     return;
                 }
                 DataInfo info = new DataInfo();
@@ -102,16 +131,19 @@ public final class GameDataManager {
                         .getString(KEY_DATA_VERSION, "");
                 if (info.version.equals(installed) && isInstalled(activity, info)) {
                     com.hopepride.samp.diagnostics.Diagnostics.event("DATA_INSTALL_VERIFIED");
-                    MAIN.post(() -> { dismissLoading(); if (!activity.isFinishing()) callback.onReady(); });
+                    postToUi(activity, () -> {
+                        dismissLoading();
+                        if (callback != null) callback.onReady();
+                    });
                     return;
                 }
                 com.hopepride.samp.diagnostics.Diagnostics.event("DATA_INSTALL_REQUIRED");
                 final DataInfo fi = info;
-                MAIN.post(() -> showDownloadOffer(activity, fi, callback));
+                postToUi(activity, () -> showDownloadOffer(activity, fi, callback));
             } catch (Exception e) {
                 com.hopepride.samp.diagnostics.Diagnostics.error("DATA_CONFIG_FAILED", e);
                 android.util.Log.e("GameDataManager", "Config check failed", e);
-                MAIN.post(() -> showNetworkError(activity, e.getMessage(), callback));
+                postToUi(activity, () -> showNetworkError(activity, e.getMessage(), callback));
             }
         });
     }
@@ -278,8 +310,23 @@ public final class GameDataManager {
                 info.url, info.version, info.size, info.sentinel);
     }
 
-    /** Active callback wired by the foreground activity, replayed when done. */
+    /**
+     * Active callback wired by the foreground activity, replayed when done.
+     *
+     * Registered and cleared by the Activity itself, so a callback that belongs to a
+     * destroyed Activity cannot be invoked by a download finishing later.
+     */
     private static volatile ReadyCallback readyCallback;
+
+    /** Registers the callback that should receive a completion that arrives later. */
+    public static void setReadyCallback(ReadyCallback callback) {
+        readyCallback = callback;
+    }
+
+    /** Clears the callback; the Activity calls this from onDestroy(). */
+    public static void clearReadyCallback() {
+        readyCallback = null;
+    }
 
     /** Show the progress dialog and observe service state; dismiss on DONE. */
     private static void registerProgressUi(Activity a) {
@@ -484,7 +531,7 @@ public final class GameDataManager {
         return getText(address);
     }
 
-    private static void downloadWithProgress(String url, File out, long expectedSize, ProgressUi ui) throws Exception {
+    private static void downloadWithProgress(Activity a, String url, File out, long expectedSize, ProgressUi ui) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(20000); c.setReadTimeout(60000);
         c.setRequestProperty("User-Agent", "M-SAMP-Launcher");
@@ -495,7 +542,7 @@ public final class GameDataManager {
         if (total <= 0) total = expectedSize;
 
         final long totalF = total;
-        postPhase(ui, "Mengunduh game data...", totalF > 0 ? "0 / " + fmtBytes(totalF) : "");
+        postPhase(a, ui, "Mengunduh game data...", totalF > 0 ? "0 / " + fmtBytes(totalF) : "");
         long lastUi = 0, lastBytes = 0, startNs = System.nanoTime();
         byte[] buf = new byte[128 * 1024];
         try (InputStream in = new BufferedInputStream(c.getInputStream());
@@ -510,12 +557,13 @@ public final class GameDataManager {
                     long elapsed = Math.max(1, (System.nanoTime() - startNs) / 1_000_000_000L);
                     long speed = done / elapsed;
                     final long d = done;
+                    final long speedNow = speed;
                     final int permille = totalF > 0 ? (int) Math.min(1000, (d * 1000) / totalF) : 0;
                     MAIN.post(() -> {
-                        if (!ui.dialog.isShowing()) return;
+                        if (!canUseUi(a) || !ui.dialog.isShowing()) return;
                         ui.bar.setProgress(permille);
                         ui.detail.setText(fmtBytes(d) + (totalF > 0 ? " / " + fmtBytes(totalF) : "") + "  •  " + (permille / 10) + "%");
-                        ui.speed.setText(fmtBytes(speed) + "/dtk");
+                        ui.speed.setText(fmtBytes(speedNow) + "/dtk");
                     });
                     lastBytes = done;
                 }
@@ -523,7 +571,12 @@ public final class GameDataManager {
         } finally {
             c.disconnect();
         }
-        MAIN.post(() -> { if (ui.dialog.isShowing()) { ui.bar.setProgress(1000); ui.detail.setText("Download selesai"); ui.speed.setText(""); } });
+        MAIN.post(() -> {
+            if (!canUseUi(a) || !ui.dialog.isShowing()) return;
+            ui.bar.setProgress(1000);
+            ui.detail.setText("Download selesai");
+            ui.speed.setText("");
+        });
     }
 
     private static void extractWithProgress(Activity a, File zipFile, ProgressUi ui) throws Exception {
@@ -542,7 +595,7 @@ public final class GameDataManager {
             if (!stripPrefix.isEmpty())
                 android.util.Log.i("GameDataManager", "stripping zip prefix: " + stripPrefix);
 
-            postPhase(ui, "Mengekstrak data...", "0 / " + totalEntries + " file");
+            postPhase(a, ui, "Mengekstrak data...", "0 / " + totalEntries + " file");
             Enumeration<? extends ZipEntry> en = zip.entries();
             int done = 0; long lastUi = 0;
             byte[] buf = new byte[128 * 1024];
@@ -577,7 +630,7 @@ public final class GameDataManager {
                     final int d = done; final String nm = name;
                     final int permille = (int) Math.min(1000, (d * 1000L) / totalEntries);
                     MAIN.post(() -> {
-                        if (!ui.dialog.isShowing()) return;
+                        if (!canUseUi(a) || !ui.dialog.isShowing()) return;
                         ui.bar.setProgress(permille);
                         ui.detail.setText(d + " / " + totalEntries + " file  •  " + (permille / 10) + "%");
                         String shortName = nm.length() > 42 ? "..." + nm.substring(nm.length() - 39) : nm;
@@ -586,7 +639,12 @@ public final class GameDataManager {
                 }
             }
         }
-        MAIN.post(() -> { if (ui.dialog.isShowing()) { ui.bar.setProgress(1000); ui.detail.setText("Ekstrak selesai"); ui.speed.setText(""); } });
+        MAIN.post(() -> {
+            if (!canUseUi(a) || !ui.dialog.isShowing()) return;
+            ui.bar.setProgress(1000);
+            ui.detail.setText("Ekstrak selesai");
+            ui.speed.setText("");
+        });
     }
 
     /** Returns e.g. "files/" when every entry lives under one top-level folder, else "". */
@@ -602,9 +660,9 @@ public final class GameDataManager {
         return firstSeg == null ? "" : firstSeg;
     }
 
-    private static void postPhase(ProgressUi ui, String phase, String detail) {
+    private static void postPhase(Activity a, ProgressUi ui, String phase, String detail) {
         MAIN.post(() -> {
-            if (!ui.dialog.isShowing()) return;
+            if (!canUseUi(a) || !ui.dialog.isShowing()) return;
             ui.phase.setText(phase);
             ui.detail.setText(detail);
             ui.speed.setText("");

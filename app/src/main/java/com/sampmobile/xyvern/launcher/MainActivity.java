@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentPagerAdapter;
+import androidx.viewpager.widget.ViewPager;
 
 import com.joom.paranoid.Obfuscate;
 import com.hopepride.samp.R;
@@ -72,12 +73,16 @@ public class MainActivity extends AppCompatActivity {
         // persisted state so the download continues without a manual re-tap.
         com.hopepride.samp.game.GameDataDownloadService.autoResume(this);
 
-        GameDataManager.checkAndPrepare(this, () -> {
+        // The gate is data only; this callback is the single place the launcher UI is
+        // built, and it runs on the main thread for an Activity that is still alive.
+        GameDataManager.ReadyCallback ready = () -> {
             if (isFinishing() || isDestroyed() || launcherInitialized) return;
             launcherInitialized = true;
             com.hopepride.samp.diagnostics.Diagnostics.event("LAUNCHER_DATA_GATE_READY");
             initializeLauncherUi();
-        });
+        };
+        GameDataManager.setReadyCallback(ready);
+        GameDataManager.checkAndPrepare(this, ready);
     }
 
     private void playWelcomeSound() {
@@ -120,27 +125,68 @@ public class MainActivity extends AppCompatActivity {
         super.onStop();
     }
 
-    private void initializeLauncherUi() {
-        ConfigValidator.validateConfigFiles(this);
+    @Override
+    protected void onDestroy() {
+        // A download completion that arrives after this point must not run UI code
+        // for a dead Activity.
+        GameDataManager.clearReadyCallback();
+        if (pa != null) pa.removeOnPageChangeListener(pageChangeListener);
+        super.onDestroy();
+    }
 
-        if (!isPermissionsGranted()) {
-            ActivityCompat.requestPermissions(this, permissions, 1);
+    private void initializeLauncherUi() {
+        if (isFinishing() || isDestroyed()) return;
+
+        // If the pager already has an adapter, the UI is already built: a late
+        // callback (or a restored process) must not attach a second one. Reusing it
+        // also keeps any fragments the FragmentManager restored by tag.
+        if (pa.getAdapter() == null) {
+            ConfigValidator.validateConfigFiles(this);
+
+            if (!isPermissionsGranted()) {
+                ActivityCompat.requestPermissions(this, permissions, 1);
+            }
+
+            File file = new File(getExternalFilesDir(null) + "/download/update.apk");
+            if (file.exists()) file.delete();
+            clearModelCache();
+
+            // The offscreen page limit is deliberately left at the default (1).
+            // Setting it to 3 made ViewPager populate all three pages inside
+            // setOffscreenPageLimit(), which is how a page's onCreateView() came to
+            // run at a moment the launcher did not control. A page is now built when
+            // the user actually reaches it.
+            pa.setAdapter(new ViewPagerAdapter(getSupportFragmentManager()));
         }
 
-        File file = new File(getExternalFilesDir(null) + "/download/update.apk");
-        if (file.exists()) file.delete();
-
-        clearModelCache();
-
-        FragmentManager fm = getSupportFragmentManager();
-        ViewPagerAdapter sa = new ViewPagerAdapter(fm);
-        pa = findViewById(R.id.fragment_place);
-        pa.setAdapter(sa);
-        pa.setOffscreenPageLimit(3);
+        pa.removeOnPageChangeListener(pageChangeListener);
+        pa.addOnPageChangeListener(pageChangeListener);
 
         initNav();
         updateNavUI(pa.getCurrentItem());
     }
+
+    /**
+     * Fires after the pager has swapped pages. The transition is driven by the
+     * pager's own position updates rather than by an animation callback that calls
+     * setCurrentItem(), so a page is never swapped from inside an animation that may
+     * outlive the Activity.
+     */
+    private final ViewPager.OnPageChangeListener pageChangeListener =
+            new ViewPager.OnPageChangeListener() {
+                @Override
+                public void onPageScrolled(int position, float offset, int offsetPixels) { }
+
+                @Override
+                public void onPageSelected(int position) {
+                    if (isFinishing() || isDestroyed()) return;
+                    updateNavUI(position);
+                    animateIncomingPage(position);
+                }
+
+                @Override
+                public void onPageScrollStateChanged(int state) { }
+            };
 
     private void initNav() {
         navHome = findViewById(R.id.nav_home);
@@ -218,44 +264,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void changeTab(int position) {
-        if (pa == null) return;
+        if (pa == null || isFinishing() || isDestroyed()) return;
         if (pa.getCurrentItem() == position) return;
 
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
 
-        if (!MotionKit.shouldAnimate(this)) {
-            pa.setCurrentItem(position, false);
-            updateNavUI(position);
-            return;
-        }
-
-        // Cross-fade + slight scale on the outgoing page, then swap and run the
-        // incoming page's own entrance. A hard setCurrentItem() is what made tab
-        // switches feel like a fragment replacement instead of a transition.
-        final View content = pa;
-        final float out = (position > pa.getCurrentItem()) ? -0.04f : 0.04f;
-        content.animate()
-                .alpha(0f)
-                .scaleX(1f + out)
-                .scaleY(1f + out)
-                .setDuration(MotionSpec.DURATION_FAST)
-                .setInterpolator(MotionKit.enterInterpolator())
-                .withEndAction(() -> {
-                    pa.setCurrentItem(position, false);
-                    content.setAlpha(0f);
-                    content.setScaleX(0.98f);
-                    content.setScaleY(0.98f);
-                    content.animate()
-                            .alpha(1f)
-                            .scaleX(1f)
-                            .scaleY(1f)
-                            .setDuration(MotionSpec.DURATION_MEDIUM)
-                            .setInterpolator(MotionKit.emphasisInterpolator())
-                            .start();
-                })
-                .start();
-
+        // The swap is immediate and the motion belongs to the incoming page: it
+        // runs its own entrance in onViewCreated()/onResume(). Previous versions
+        // animated the whole pager and called setCurrentItem() from the animation's
+        // end action, so a fast double tap could swap pages twice, or after the
+        // Activity had already been destroyed.
+        pa.setCurrentItem(position, false);
         updateNavUI(position);
+    }
+
+    /**
+     * Runs the incoming page's entrance. The view belongs to the fragment, so this
+     * only animates it once it exists; when the fragment has not created its view
+     * yet, the fragment's own entrance in onViewCreated() does the work instead of
+     * forcing the view to be built here.
+     */
+    private void animateIncomingPage(int position) {
+        if (pa == null || !MotionKit.shouldAnimate(this)) return;
+        if (position < 0 || position >= pa.getChildCount()) return;
+
+        View page = pa.getChildAt(position);
+        if (page == null) return;
+
+        page.setAlpha(0f);
+        page.setTranslationY(MotionKit.dp(this, 10));
+        page.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(MotionSpec.DURATION_MEDIUM)
+                .setInterpolator(MotionKit.emphasisInterpolator())
+                .start();
     }
 
     public static void hideKeyboard(Activity activity) {

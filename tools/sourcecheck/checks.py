@@ -443,7 +443,7 @@ def check_static_call_arity():
     call_re = re.compile(r"\b(" + "|".join(names) + r")\.(\w+)\s*\(")
     for path in java_files():
         text = read(path)
-        cleaned = strip_code_literals_only(text)
+        cleaned = mask_literals(text)
         for match in call_re.finditer(cleaned):
             key = match.group(1) + "." + match.group(2)
             if key not in signatures:
@@ -610,6 +610,253 @@ def check_layout_symbols():
             fail(path, "R.layout.%s does not exist" % name)
 
 
+# ------------------------------------------------- fragment view lifecycle
+def method_body(text, name):
+    """Returns (body, offset) of the first method called `name`, or (None, -1).
+
+    Braces are matched with the literal-aware scanner, so a lambda inside the body
+    does not end it early.
+    """
+    pattern = re.compile(r"\b" + name + r"\s*\(")
+    for match in pattern.finditer(text):
+        # Only a definition: the token before must not be a dot (a call site).
+        before = text[:match.start()].rstrip()
+        if before.endswith("."):
+            continue
+        depth = 0
+        index = match.end() - 1
+        body_start = None
+        while index < len(text):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    # Skip the throws clause up to the opening brace.
+                    brace = text.find("{", index)
+                    if brace < 0:
+                        return None, -1
+                    body_start = brace
+                    break
+            index += 1
+        if body_start is None:
+            continue
+        cleaned = strip_code(text, cpp=False)
+        depth = 0
+        for cursor in range(body_start, len(cleaned)):
+            if cleaned[cursor] == "{":
+                depth += 1
+            elif cleaned[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[body_start:cursor + 1], body_start
+        return text[body_start:], body_start
+    return None, -1
+
+
+# Calls that are illegal inside onCreateView(): the Fragment's own view does not
+# exist until onCreateView() returns, so these throw
+#   "Fragment X did not return a View from onCreateView()".
+FORBIDDEN_IN_CREATE_VIEW = ("requireView(", "requireActivity(", "requireContext(")
+
+
+def check_fragment_view_lifecycle():
+    for path in java_files():
+        text = read(path)
+        if "extends Fragment" not in text:
+            continue
+
+        body, offset = method_body(text, "onCreateView")
+        if body is None:
+            continue
+
+        # Look only at real code: comments mentioning requireView() are fine.
+        cleaned = strip_code_literals_only(body)
+        for forbidden in FORBIDDEN_IN_CREATE_VIEW:
+            index = cleaned.find(forbidden)
+            while index >= 0:
+                line = body[:index].count("\n") + 1
+                fail(path, "%s is called inside onCreateView() (body line %d): the "
+                           "Fragment view does not exist yet" % (forbidden[:-1], line))
+                index = cleaned.find(forbidden, index + 1)
+
+        # A view field must not be used as the fragment's own view before the
+        # framework publishes it either: getView() is always null here.
+        if re.search(r"\bgetView\(\)\s*[);.]", cleaned):
+            fail(path, "getView() is used inside onCreateView(), where it is always null")
+
+        # Returning null from a fragment that inflates a layout is a bug, but the
+        # early "return view;" guards added for context loss are legitimate, so only
+        # an explicit bare "return null;" is reported.
+        if re.search(r"\breturn\s+null\s*;", cleaned):
+            fail(path, "onCreateView() returns null; a layout fragment must return a view")
+
+    # onDestroyView must not leave listeners attached to a destroyed view.
+    for path in java_files():
+        text = read(path)
+        if "extends Fragment" not in text:
+            continue
+        body, _ = method_body(text, "onDestroyView")
+        if body is None:
+            continue
+        if "View.OnClickListener" in body or ".setOnClickListener" in body:
+            fail(path, "onDestroyView() appears to attach a view listener instead of removing one")
+
+
+# ------------------------------------- in-class static call arity (own class)
+def check_own_class_arity():
+    """Catches calls like postPhase(ui, ...) after the helper gained a parameter.
+
+    Only static methods of the same file are checked: that is where a signature
+    change silently leaves a stale call site, and it needs no type information.
+    """
+    for path in java_files():
+        text = read(path)
+        cleaned = mask_literals(text)
+
+        declared = {}
+        for match in re.finditer(r"^\s*(?:public\s+|private\s+|protected\s+)?static\s+"
+                                 r"[\w.<>\[\], ?]+?\s+(\w+)\s*\(", text, re.M):
+            params_start = match.end() - 1
+            depth = 0
+            index = params_start
+            while index < len(text) and depth >= 0:
+                if text[index] == "(":
+                    depth += 1
+                elif text[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            params = text[params_start + 1:index].strip()
+            if "..." in params:
+                declared[match.group(1)] = None      # varargs: arity unknown
+                continue
+            if params == "":
+                count = 0
+            else:
+                inner = 0
+                count = 1
+                for char in params:
+                    if char in "<([":
+                        inner += 1
+                    elif char in ">)]":
+                        inner -= 1
+                    elif char == "," and inner == 0:
+                        count += 1
+            declared.setdefault(match.group(1), set()).add(count)
+
+        if not declared:
+            continue
+
+        for name, arities in declared.items():
+            if arities is None:
+                continue
+            for match in re.finditer(r"(?<![\w.])" + re.escape(name) + r"\s*\(", cleaned):
+                # Skip the declaration itself.
+                line_start = cleaned.rfind("\n", 0, match.start()) + 1
+                head = cleaned[line_start:match.start()]
+                if "static" in head:
+                    continue
+                depth = 1
+                index = match.end()
+                while index < len(cleaned) and depth > 0:
+                    if cleaned[index] == "(":
+                        depth += 1
+                    elif cleaned[index] == ")":
+                        depth -= 1
+                    index += 1
+                if depth != 0:
+                    continue
+                # Declaration vs call: the source text (not the mask) is used here,
+                # because a comment may follow the parenthesis of a definition.
+                same_line = text[index:text.find("\n", index) if text.find("\n", index) >= 0
+                                 else len(text)]
+                stripped = same_line.strip()
+                if stripped.startswith("{") or stripped.startswith("throws"):
+                    continue        # this is the declaration, not a call
+                count = count_arguments(cleaned[match.end():index - 1])
+                if count not in arities:
+                    line = text[:match.start()].count("\n") + 1
+                    fail(path, "%s() called with %d argument(s) in the same class, "
+                               "declared %s (line %d)"
+                         % (name, count, sorted(arities), line))
+
+
+def mask_literals(text):
+    """Replaces comment and literal *contents* with spaces, keeping every offset.
+
+    Needed for argument counting: a comma inside "Download selesai, tetapi ..."
+    is not an argument separator.
+    """
+    out = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        char = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if char == "/" and nxt == "/":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if char == "/" and nxt == "*":
+            out[i] = " "
+            out[i + 1] = " "
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                if text[i] != "\n":
+                    out[i] = " "
+                i += 1
+            if i + 1 < n:
+                out[i] = " "
+                out[i + 1] = " "
+            i += 2
+            continue
+        if char == '"' or char == "'":
+            quote = char
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    out[i] = " "
+                    if i + 1 < n:
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    i += 1
+                    break
+                if text[i] == "\n":
+                    break
+                out[i] = " "
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def count_arguments(raw):
+    """Counts top level commas in an argument list.
+
+    Every bracket kind opens a nested level, including "(": a lambda such as
+    "activity, () -> show(a, b)" has two arguments, not four.
+    """
+    text = raw.strip()
+    if not text:
+        return 0
+    depth = 0
+    count = 1
+    for char in text:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+    return count
+
+
 def main():
     check_conflict_markers()
     check_imports()
@@ -621,6 +868,8 @@ def main():
     check_native_sources()
     check_static_call_arity()
     check_layout_symbols()
+    check_fragment_view_lifecycle()
+    check_own_class_arity()
 
     if findings:
         for line in findings:

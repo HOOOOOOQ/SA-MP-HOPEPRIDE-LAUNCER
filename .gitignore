@@ -20,3 +20,7 @@ tools/hosttest/build/
 
 # Built APK copied here by CI; the binary is a release asset, not source.
 /release/
+
+# Python bytecode from the source checker
+__pycache__/
+*.pyc
