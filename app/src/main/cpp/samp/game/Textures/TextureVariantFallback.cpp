@@ -35,6 +35,15 @@ volatile unsigned long long g_texVariantFallbacks = 0;
 volatile unsigned long long g_texVariantLoadFailures = 0;
 volatile unsigned long long g_texDbSortSkips = 0;
 
+// Defined here, at file scope, because TextureVariantFallback.h declares them
+// extern for main.cpp's crash report. Inside the anonymous namespace below they
+// would get internal linkage and the final link would fail on the reference.
+unsigned g_gpuCapabilities = 0;
+bool g_gpuCapabilitiesKnown = false;
+
+// Internal: whether the "not available yet" line has been logged once.
+namespace { bool g_gpuCapabilitiesRetried = false; }
+
 // ---------------------------------------------------------------------------
 // Database snapshots.
 //
@@ -501,9 +510,6 @@ void* LoadHook(const char* withName, bool fullyLoad, int forcedFormat)
 // RenderWare is initialised glGetString returns null, which is reported as "no
 // constraint" rather than as "no formats", so an early call cannot veto anything.
 // ---------------------------------------------------------------------------
-unsigned g_gpuCapabilities = 0;
-bool g_gpuCapabilitiesKnown = false;
-bool g_gpuCapabilitiesRetried = false;
 
 void DetectGpuCapabilities(const char* when)
 {
