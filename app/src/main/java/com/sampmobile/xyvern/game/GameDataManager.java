@@ -531,7 +531,7 @@ public final class GameDataManager {
         return getText(address);
     }
 
-    private static void downloadWithProgress(String url, File out, long expectedSize, ProgressUi ui) throws Exception {
+    private static void downloadWithProgress(Activity a, String url, File out, long expectedSize, ProgressUi ui) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(20000); c.setReadTimeout(60000);
         c.setRequestProperty("User-Agent", "M-SAMP-Launcher");
@@ -542,7 +542,7 @@ public final class GameDataManager {
         if (total <= 0) total = expectedSize;
 
         final long totalF = total;
-        postPhase(ui, "Mengunduh game data...", totalF > 0 ? "0 / " + fmtBytes(totalF) : "");
+        postPhase(a, ui, "Mengunduh game data...", totalF > 0 ? "0 / " + fmtBytes(totalF) : "");
         long lastUi = 0, lastBytes = 0, startNs = System.nanoTime();
         byte[] buf = new byte[128 * 1024];
         try (InputStream in = new BufferedInputStream(c.getInputStream());
@@ -557,12 +557,13 @@ public final class GameDataManager {
                     long elapsed = Math.max(1, (System.nanoTime() - startNs) / 1_000_000_000L);
                     long speed = done / elapsed;
                     final long d = done;
+                    final long speedNow = speed;
                     final int permille = totalF > 0 ? (int) Math.min(1000, (d * 1000) / totalF) : 0;
                     MAIN.post(() -> {
                         if (!canUseUi(a) || !ui.dialog.isShowing()) return;
                         ui.bar.setProgress(permille);
                         ui.detail.setText(fmtBytes(d) + (totalF > 0 ? " / " + fmtBytes(totalF) : "") + "  •  " + (permille / 10) + "%");
-                        ui.speed.setText(fmtBytes(speed) + "/dtk");
+                        ui.speed.setText(fmtBytes(speedNow) + "/dtk");
                     });
                     lastBytes = done;
                 }
@@ -659,9 +660,9 @@ public final class GameDataManager {
         return firstSeg == null ? "" : firstSeg;
     }
 
-    private static void postPhase(ProgressUi ui, String phase, String detail) {
+    private static void postPhase(Activity a, ProgressUi ui, String phase, String detail) {
         MAIN.post(() -> {
-            if (!ui.dialog.isShowing()) return;
+            if (!canUseUi(a) || !ui.dialog.isShowing()) return;
             ui.phase.setText(phase);
             ui.detail.setText(detail);
             ui.speed.setText("");
