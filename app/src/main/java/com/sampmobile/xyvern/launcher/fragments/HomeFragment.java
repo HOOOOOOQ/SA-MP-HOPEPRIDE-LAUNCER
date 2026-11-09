@@ -70,6 +70,12 @@ public class HomeFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_home, container, false);
 
+        // The Activity can be gone when a page is re-created during a fast tab
+        // switch or while the launcher is being destroyed; every lookup below is
+        // guarded so onCreateView() still returns a usable view.
+        final Context ctx = getContext();
+        if (ctx == null) return view;
+
         if (getActivity() instanceof MainActivity) {
             ((MainActivity) getActivity()).hideKeyboard(getActivity());
         }
@@ -83,7 +89,6 @@ public class HomeFragment extends Fragment {
         btnVerifyData = view.findViewById(R.id.btn_verify_data);
         btnDownloadData = view.findViewById(R.id.btn_download_data);
 
-        Context ctx = requireContext();
         File extDir = ctx.getExternalFilesDir(null);
         if (extDir != null) {
             tvManualPath.setText(extDir.getAbsolutePath());
@@ -109,8 +114,11 @@ public class HomeFragment extends Fragment {
         android.view.View dataCenter = view.findViewById(R.id.btn_data_center);
         if (dataCenter != null) {
             MotionKit.attachPressFeedback(dataCenter);
-            dataCenter.setOnClickListener(v ->
-                    startActivity(new android.content.Intent(requireContext(), DataCenterActivity.class)));
+            dataCenter.setOnClickListener(v -> {
+                Context context = getContext();
+                if (context == null) return;
+                startActivity(new android.content.Intent(context, DataCenterActivity.class));
+            });
         }
 
         // Entrance motion: the dashboard content settles in once, in reading order.
@@ -138,11 +146,12 @@ public class HomeFragment extends Fragment {
     }
 
     private void runVerification() {
-        if (getContext() == null) return;
+        Context context = getContext();
+        if (context == null || tvDataDesc == null) return;
         tvDataDesc.setText("Memeriksa file inti game...");
         btnVerifyData.setEnabled(false);
 
-        final Context appContext = requireContext().getApplicationContext();
+        final Context appContext = context.getApplicationContext();
         final View currentView = getView();
         executor.execute(() -> {
             GameDataVerifier.VerificationResult result = GameDataVerifier.verifyGameData(appContext);
@@ -184,10 +193,11 @@ public class HomeFragment extends Fragment {
     }
 
     private void startOnlineDataDownload() {
-        if (getContext() == null) return;
+        Context context = getContext();
+        if (context == null || getView() == null) return;
         showDownloadProgress();
         observeDownload(false);
-        GameDataDownloadService.start(requireContext(),
+        GameDataDownloadService.start(context.getApplicationContext(),
                 GameDataDownloadService.ACTION_ASSETS, DATA_ZIP_URL, "assets", 0L, "");
     }
 
@@ -254,7 +264,18 @@ public class HomeFragment extends Fragment {
     public void onDestroyView() {
         super.onDestroyView();
         if (listener != null) { GameDataDownloadService.removeListener(listener); listener = null; }
+        // Reset together with the view: the flag describes a bar that no longer
+        // exists, and leaving it set would make the next onResume() skip the
+        // verification step that refreshes the status card.
         isDownloading = false;
+        dotStatus = null;
+        tvDataTitle = null;
+        tvDataDesc = null;
+        tvManualPath = null;
+        pbDownload = null;
+        tvDownloadProgress = null;
+        btnVerifyData = null;
+        btnDownloadData = null;
     }
 
     @Override

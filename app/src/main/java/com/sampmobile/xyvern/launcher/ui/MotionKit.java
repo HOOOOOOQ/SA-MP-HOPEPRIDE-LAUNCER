@@ -57,6 +57,12 @@ public final class MotionKit {
         sReducedMotion = sPrefs.getBoolean(KEY_REDUCED_MOTION, false);
     }
 
+    /** The preference store every launcher animation reads. Never null after init(). */
+    public static SharedPreferences preferences(Context context) {
+        init(context);
+        return sPrefs;
+    }
+
     /** True when the user asked for less motion (accessibility / battery). */
     public static boolean reducedMotion(Context context) {
         if (sReducedMotion == null) init(context);

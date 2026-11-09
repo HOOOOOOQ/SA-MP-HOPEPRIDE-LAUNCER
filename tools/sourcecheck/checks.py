@@ -610,6 +610,100 @@ def check_layout_symbols():
             fail(path, "R.layout.%s does not exist" % name)
 
 
+# ------------------------------------------------- fragment view lifecycle
+def method_body(text, name):
+    """Returns (body, offset) of the first method called `name`, or (None, -1).
+
+    Braces are matched with the literal-aware scanner, so a lambda inside the body
+    does not end it early.
+    """
+    pattern = re.compile(r"\b" + name + r"\s*\(")
+    for match in pattern.finditer(text):
+        # Only a definition: the token before must not be a dot (a call site).
+        before = text[:match.start()].rstrip()
+        if before.endswith("."):
+            continue
+        depth = 0
+        index = match.end() - 1
+        body_start = None
+        while index < len(text):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    # Skip the throws clause up to the opening brace.
+                    brace = text.find("{", index)
+                    if brace < 0:
+                        return None, -1
+                    body_start = brace
+                    break
+            index += 1
+        if body_start is None:
+            continue
+        cleaned = strip_code(text, cpp=False)
+        depth = 0
+        for cursor in range(body_start, len(cleaned)):
+            if cleaned[cursor] == "{":
+                depth += 1
+            elif cleaned[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[body_start:cursor + 1], body_start
+        return text[body_start:], body_start
+    return None, -1
+
+
+# Calls that are illegal inside onCreateView(): the Fragment's own view does not
+# exist until onCreateView() returns, so these throw
+#   "Fragment X did not return a View from onCreateView()".
+FORBIDDEN_IN_CREATE_VIEW = ("requireView(", "requireActivity(", "requireContext(")
+
+
+def check_fragment_view_lifecycle():
+    for path in java_files():
+        text = read(path)
+        if "extends Fragment" not in text:
+            continue
+
+        body, offset = method_body(text, "onCreateView")
+        if body is None:
+            continue
+
+        # Look only at real code: comments mentioning requireView() are fine.
+        cleaned = strip_code_literals_only(body)
+        for forbidden in FORBIDDEN_IN_CREATE_VIEW:
+            index = cleaned.find(forbidden)
+            while index >= 0:
+                line = body[:index].count("\n") + 1
+                fail(path, "%s is called inside onCreateView() (body line %d): the "
+                           "Fragment view does not exist yet" % (forbidden[:-1], line))
+                index = cleaned.find(forbidden, index + 1)
+
+        # A view field must not be used as the fragment's own view before the
+        # framework publishes it either: getView() is always null here.
+        if re.search(r"\bgetView\(\)\s*[);.]", cleaned):
+            fail(path, "getView() is used inside onCreateView(), where it is always null")
+
+        # Returning null from a fragment that inflates a layout is a bug, but the
+        # early "return view;" guards added for context loss are legitimate, so only
+        # an explicit bare "return null;" is reported.
+        if re.search(r"\breturn\s+null\s*;", cleaned):
+            fail(path, "onCreateView() returns null; a layout fragment must return a view")
+
+    # onDestroyView must not leave listeners attached to a destroyed view.
+    for path in java_files():
+        text = read(path)
+        if "extends Fragment" not in text:
+            continue
+        body, _ = method_body(text, "onDestroyView")
+        if body is None:
+            continue
+        if "View.OnClickListener" in body or ".setOnClickListener" in body:
+            fail(path, "onDestroyView() appears to attach a view listener instead of removing one")
+
+
 def main():
     check_conflict_markers()
     check_imports()
@@ -621,6 +715,7 @@ def main():
     check_native_sources()
     check_static_call_arity()
     check_layout_symbols()
+    check_fragment_view_lifecycle()
 
     if findings:
         for line in findings:
